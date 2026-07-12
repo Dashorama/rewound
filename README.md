@@ -53,6 +53,16 @@ node dist/cli.js index          # or: npm link, then `agentgrep index`
 
 By default agentgrep reads `~/.claude/projects/**/*.jsonl` (read-only — it never modifies your transcripts) and writes its own database to `~/.agentgrep/agentgrep.db`. Override the DB path with `--db <path>` or `AGENTGREP_DB=<path>`.
 
+### Your history outlives Claude Code's cleanup
+
+Claude Code deletes transcripts older than ~30 days at startup. agentgrep's index is permanent: once a session is indexed, it stays searchable even after the source file is gone (it's kept as an *archived* session). Anything from before you started indexing is already unrecoverable — so the best moment to run `agentgrep index` is now, and then regularly. A cron line makes it automatic:
+
+```
+@hourly agentgrep index
+```
+
+Incremental runs take well under a second when little has changed.
+
 ## The surfaces
 
 ### CLI — available now
@@ -67,13 +77,15 @@ agentgrep stats [--json]
 
 `search` supports relative time windows (`--since 7d`), project filtering, and role filtering. Query terms are quoted automatically so punctuation never throws an FTS syntax error; pass `--raw` if you want real FTS5 query syntax.
 
+Results are built to be scanned by a human eye: your own words and the agent's prose rank above tool output that merely mentions the term (a `cat` of a file no longer buries the sentence where you actually discussed the bug), and each session appears once — its best hit plus a `+N more matches in this session` count. Pass `--all-matches` to disassemble a session into every matching message.
+
 Two search tips from real-corpus testing: scope with `--project` when your memory is project-specific — cross-cutting terms (preferences, conventions, tool names) appear in *every* project's sessions and will drown an unscoped query. And run `agentgrep index` before hunting for recent work; indexing is incremental and takes well under a second when little has changed.
 
 ### MCP server — available now
 
 `agentgrep mcp` starts a stdio MCP server so a Claude Code agent can search its own history mid-session — the moat feature. Three tools:
 
-- `search_history({query, project?, since?, limit?})` — ranked excerpts (≤700 chars each) with session id/title/date and a hint to fetch more context.
+- `search_history({query, project?, since?, limit?, all_matches?})` — ranked excerpts (≤700 chars each) with session id/title/date, one best hit per session by default, and a hint to fetch more context.
 - `get_session_summary({session_id})` — title, project, dates, message count, tools/models used, first prompt and last response (truncated).
 - `get_session_excerpt({session_id, match_uuid?, context?})` — the matched message plus surrounding context, readable.
 
@@ -103,6 +115,10 @@ Server-rendered with zero frontend build step, colorblind-safe palette (blue/ora
 ## Cost estimates
 
 `agentgrep stats` and search results include an **estimated** cost per session, computed from a static $/Mtok table (updated by hand, not live pricing). Treat it as a rough API-equivalent value, not a bill.
+
+## Roadmap
+
+Keyword-first search is deliberate for v0.x — it's fast, local, and predictable. Local hybrid/semantic search (vector index built with a local embedding model, no API keys, fused with FTS ranking) is planned once the keyword surface has proven itself; the gap it closes is vocabulary mismatch ("that time the port was already taken" vs `EADDRINUSE`).
 
 ## License & pricing
 
