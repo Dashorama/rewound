@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+*.local
+.worktrees/
+tmp/
+
+# local-only agent/tooling files — never publish
+CLAUDE.md
+docs-internal/
+.mcp.json
+*-mcp.json

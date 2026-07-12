@@ -1,0 +1,31 @@
+agentgrep — Source-Available License (v0.1)
+
+Copyright (c) 2026 David Erner
+
+Personal use
+------------
+You may use, copy, and modify this software free of charge for your own
+personal projects, on your own machines.
+
+Commercial / team use
+----------------------
+Use by a company, team, or on behalf of an organization requires a paid
+license: USD $29 per individual, or USD $99 per team of up to 10 people —
+one-time, per major version. See the README for how to purchase, or contact
+the author. Version 0.x has no license-key enforcement; purchasing a license
+is how you comply with these terms.
+
+Source availability
+--------------------
+The source is provided so you can read it, audit it, and build it yourself.
+This is not an open-source license: no OSI-approved license grant is made,
+and redistribution (including publishing forks or copies) is not permitted
+without written permission from the author.
+
+No warranty
+-----------
+This software is provided "as is", without warranty of any kind, express or
+implied, including but not limited to the warranties of merchantability,
+fitness for a particular purpose, and noninfringement. In no event shall the
+author be liable for any claim, damages, or other liability arising from the
+use of this software.

@@ -1,0 +1,518 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import Database from "better-sqlite3";
+import type { NormalizedSession } from "./types.js";
+import { estimateCostUsd } from "./pricing.js";
+
+const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY, source TEXT NOT NULL, project_dir TEXT NOT NULL,
+  file_path TEXT NOT NULL, title TEXT, git_branch TEXT,
+  started_at TEXT, ended_at TEXT, message_count INTEGER DEFAULT 0,
+  models TEXT,               -- JSON array
+  input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
+  cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0,
+  est_cost_usd REAL DEFAULT 0, parse_errors INTEGER DEFAULT 0,
+  archived INTEGER DEFAULT 0  -- 1 once source file is gone (archive mode)
+);
+CREATE TABLE IF NOT EXISTS files (
+  path TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+  size INTEGER NOT NULL, mtime_ms INTEGER NOT NULL, byte_offset INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, uuid TEXT,
+  role TEXT NOT NULL, ts TEXT, text TEXT NOT NULL, tools TEXT,
+  model TEXT, is_sidechain INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+  text, content='messages', content_rowid='id', tokenize='porter unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+  INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, text) VALUES('delete', old.id, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, text) VALUES('delete', old.id, old.text);
+  INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
+END;
+`;
+
+export function resolveDbPath(cliFlag?: string): string {
+  if (cliFlag) return cliFlag;
+  if (process.env.AGENTGREP_DB) return process.env.AGENTGREP_DB;
+  return path.join(os.homedir(), ".agentgrep", "agentgrep.db");
+}
+
+export function openDb(dbPath: string): Database.Database {
+  const dir = path.dirname(dbPath);
+  if (dir && dir !== ".") fs.mkdirSync(dir, { recursive: true });
+  const db = new Database(dbPath);
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
+  db.exec(SCHEMA_SQL);
+  return db;
+}
+
+export interface FileRecord {
+  path: string;
+  sessionId: string;
+  size: number;
+  mtimeMs: number;
+  byteOffset: number;
+}
+
+export function getFileRecord(db: Database.Database, filePath: string): FileRecord | undefined {
+  const row = db
+    .prepare("SELECT path, session_id, size, mtime_ms, byte_offset FROM files WHERE path = ?")
+    .get(filePath) as
+    | { path: string; session_id: string; size: number; mtime_ms: number; byte_offset: number }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    path: row.path,
+    sessionId: row.session_id,
+    size: row.size,
+    mtimeMs: row.mtime_ms,
+    byteOffset: row.byte_offset,
+  };
+}
+
+export function upsertFileRecord(db: Database.Database, rec: FileRecord): void {
+  db.prepare(
+    `INSERT INTO files (path, session_id, size, mtime_ms, byte_offset)
+     VALUES (@path, @sessionId, @size, @mtimeMs, @byteOffset)
+     ON CONFLICT(path) DO UPDATE SET
+       session_id = excluded.session_id,
+       size = excluded.size,
+       mtime_ms = excluded.mtime_ms,
+       byte_offset = excluded.byte_offset`
+  ).run(rec);
+}
+
+export function listTrackedFiles(db: Database.Database): Array<{ path: string; sessionId: string }> {
+  const rows = db.prepare("SELECT path, session_id as sessionId FROM files").all() as Array<{
+    path: string;
+    sessionId: string;
+  }>;
+  return rows;
+}
+
+export interface SessionRow {
+  id: string;
+  source: string;
+  projectDir: string;
+  filePath: string;
+  title?: string;
+  gitBranch?: string;
+  startedAt?: string;
+  endedAt?: string;
+  messageCount: number;
+  models: string[];
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  estCostUsd: number;
+  parseErrors: number;
+  archived: boolean;
+}
+
+function rowToSession(row: any): SessionRow {
+  return {
+    id: row.id,
+    source: row.source,
+    projectDir: row.project_dir,
+    filePath: row.file_path,
+    title: row.title ?? undefined,
+    gitBranch: row.git_branch ?? undefined,
+    startedAt: row.started_at ?? undefined,
+    endedAt: row.ended_at ?? undefined,
+    messageCount: row.message_count,
+    models: parseJsonStringArray(row.models),
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheReadTokens: row.cache_read_tokens,
+    cacheWriteTokens: row.cache_write_tokens,
+    estCostUsd: row.est_cost_usd,
+    parseErrors: row.parse_errors,
+    archived: Boolean(row.archived),
+  };
+}
+
+export function getSession(db: Database.Database, id: string): SessionRow | undefined {
+  const row = db.prepare("SELECT * FROM sessions WHERE id = ?").get(id);
+  return row ? rowToSession(row) : undefined;
+}
+
+export function getSessionByIdOrPrefix(db: Database.Database, idOrPrefix: string): SessionRow | undefined {
+  const exact = getSession(db, idOrPrefix);
+  if (exact) return exact;
+  const row = db.prepare("SELECT * FROM sessions WHERE id LIKE ? ORDER BY id LIMIT 1").get(`${idOrPrefix}%`);
+  return row ? rowToSession(row) : undefined;
+}
+
+export function markSessionArchived(db: Database.Database, id: string): void {
+  db.prepare("UPDATE sessions SET archived = 1 WHERE id = ?").run(id);
+}
+
+export function deleteSessionMessages(db: Database.Database, id: string): void {
+  db.prepare("DELETE FROM messages WHERE session_id = ?").run(id);
+}
+
+export interface UpsertOptions {
+  mode: "replace" | "append";
+}
+
+export function upsertSessionMessages(
+  db: Database.Database,
+  session: NormalizedSession,
+  opts: UpsertOptions
+): void {
+  const tx = db.transaction(() => {
+    if (opts.mode === "replace") {
+      deleteSessionMessages(db, session.id);
+    }
+
+    const insertMessage = db.prepare(
+      `INSERT INTO messages (session_id, uuid, role, ts, text, tools, model, is_sidechain)
+       VALUES (@sessionId, @uuid, @role, @ts, @text, @tools, @model, @isSidechain)`
+    );
+    for (const m of session.messages) {
+      insertMessage.run({
+        sessionId: session.id,
+        uuid: m.uuid,
+        role: m.role,
+        ts: m.ts,
+        text: m.text,
+        tools: JSON.stringify(m.tools ?? []),
+        model: m.model ?? null,
+        isSidechain: m.isSidechain ? 1 : 0,
+      });
+    }
+
+    const existing = opts.mode === "append" ? getSession(db, session.id) : undefined;
+
+    const modelsSeen = new Set(existing?.models ?? []);
+    let costDelta = 0;
+    for (const m of session.messages) {
+      if (m.model) modelsSeen.add(m.model);
+      if (m.usage) costDelta += estimateCostUsd(m.model, m.usage);
+    }
+
+    const usageSums = session.messages.reduce(
+      (acc, m) => {
+        if (m.usage) {
+          acc.input += m.usage.input;
+          acc.output += m.usage.output;
+          acc.cacheRead += m.usage.cacheRead;
+          acc.cacheWrite += m.usage.cacheWrite;
+        }
+        return acc;
+      },
+      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    );
+
+    const messageCount = (existing?.messageCount ?? 0) + session.messages.length;
+    const inputTokens = (existing?.inputTokens ?? 0) + usageSums.input;
+    const outputTokens = (existing?.outputTokens ?? 0) + usageSums.output;
+    const cacheReadTokens = (existing?.cacheReadTokens ?? 0) + usageSums.cacheRead;
+    const cacheWriteTokens = (existing?.cacheWriteTokens ?? 0) + usageSums.cacheWrite;
+    const estCostUsd = (existing?.estCostUsd ?? 0) + costDelta;
+    const parseErrors = (existing?.parseErrors ?? 0) + session.parseErrors;
+
+    const title = session.title ?? existing?.title;
+    const gitBranch = session.gitBranch ?? existing?.gitBranch;
+    const startedAt =
+      existing?.startedAt && session.startedAt
+        ? existing.startedAt < session.startedAt
+          ? existing.startedAt
+          : session.startedAt
+        : session.startedAt ?? existing?.startedAt;
+    const endedAt =
+      existing?.endedAt && session.endedAt
+        ? existing.endedAt > session.endedAt
+          ? existing.endedAt
+          : session.endedAt
+        : session.endedAt ?? existing?.endedAt;
+
+    db.prepare(
+      `INSERT INTO sessions (
+         id, source, project_dir, file_path, title, git_branch, started_at, ended_at,
+         message_count, models, input_tokens, output_tokens, cache_read_tokens,
+         cache_write_tokens, est_cost_usd, parse_errors, archived
+       ) VALUES (
+         @id, @source, @projectDir, @filePath, @title, @gitBranch, @startedAt, @endedAt,
+         @messageCount, @models, @inputTokens, @outputTokens, @cacheReadTokens,
+         @cacheWriteTokens, @estCostUsd, @parseErrors, 0
+       )
+       ON CONFLICT(id) DO UPDATE SET
+         project_dir = excluded.project_dir,
+         file_path = excluded.file_path,
+         title = excluded.title,
+         git_branch = excluded.git_branch,
+         started_at = excluded.started_at,
+         ended_at = excluded.ended_at,
+         message_count = excluded.message_count,
+         models = excluded.models,
+         input_tokens = excluded.input_tokens,
+         output_tokens = excluded.output_tokens,
+         cache_read_tokens = excluded.cache_read_tokens,
+         cache_write_tokens = excluded.cache_write_tokens,
+         est_cost_usd = excluded.est_cost_usd,
+         parse_errors = excluded.parse_errors,
+         archived = 0`
+    ).run({
+      id: session.id,
+      source: session.source,
+      projectDir: session.projectDir,
+      filePath: session.filePath,
+      title: title ?? null,
+      gitBranch: gitBranch ?? null,
+      startedAt: startedAt ?? null,
+      endedAt: endedAt ?? null,
+      messageCount,
+      models: JSON.stringify(Array.from(modelsSeen)),
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      estCostUsd,
+      parseErrors,
+    });
+  });
+
+  tx();
+}
+
+export interface RawSearchOptions {
+  project?: string;
+  since?: string; // ISO cutoff
+  role?: "user" | "assistant";
+  sidechains?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface RawSearchHit {
+  sessionId: string;
+  uuid: string;
+  role: string;
+  ts: string;
+  text: string;
+  snippet: string;
+  model?: string;
+  isSidechain: boolean;
+  projectDir: string;
+  title?: string;
+  estCostUsd: number;
+}
+
+export function searchMessagesRaw(
+  db: Database.Database,
+  matchExpr: string,
+  opts: RawSearchOptions
+): RawSearchHit[] {
+  const clauses: string[] = ["messages_fts MATCH @matchExpr"];
+  const params: Record<string, unknown> = {
+    matchExpr,
+    limit: opts.limit ?? 25,
+    offset: opts.offset ?? 0,
+  };
+
+  if (opts.project) {
+    clauses.push("s.project_dir LIKE @project");
+    params.project = `%${opts.project}%`;
+  }
+  if (opts.since) {
+    clauses.push("m.ts >= @since");
+    params.since = opts.since;
+  }
+  if (opts.role) {
+    clauses.push("m.role = @role");
+    params.role = opts.role;
+  }
+  if (!opts.sidechains) {
+    clauses.push("m.is_sidechain = 0");
+  }
+
+  // The 3rd/4th snippet() args below are literal \x01/\x02 bytes (invisible
+  // here), not empty strings — sentinels consumed by cli.ts's highlightSnippet
+  // and web/html.ts's highlightSnippetHtml to mark match boundaries.
+  const sql = `
+    SELECT m.session_id as sessionId, m.uuid as uuid, m.role as role, m.ts as ts,
+           m.text as text, m.model as model, m.is_sidechain as isSidechain,
+           s.project_dir as projectDir, s.title as title, s.est_cost_usd as estCostUsd,
+           snippet(messages_fts, 0, '', '', '...', 12) as snippet,
+           bm25(messages_fts) as rank
+    FROM messages_fts
+    JOIN messages m ON m.id = messages_fts.rowid
+    JOIN sessions s ON s.id = m.session_id
+    WHERE ${clauses.join(" AND ")}
+    ORDER BY rank
+    LIMIT @limit OFFSET @offset
+  `;
+
+  const rows = db.prepare(sql).all(params) as any[];
+  return rows.map((r) => ({
+    sessionId: r.sessionId,
+    uuid: r.uuid,
+    role: r.role,
+    ts: r.ts,
+    text: r.text,
+    snippet: r.snippet,
+    model: r.model ?? undefined,
+    isSidechain: Boolean(r.isSidechain),
+    projectDir: r.projectDir,
+    title: r.title ?? undefined,
+    estCostUsd: r.estCostUsd,
+  }));
+}
+
+export interface ListSessionsOptions {
+  project?: string;
+  limit?: number;
+}
+
+export function listSessions(db: Database.Database, opts: ListSessionsOptions = {}): SessionRow[] {
+  const clauses: string[] = [];
+  const params: Record<string, unknown> = { limit: opts.limit ?? 50 };
+  if (opts.project) {
+    clauses.push("project_dir LIKE @project");
+    params.project = `%${opts.project}%`;
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db
+    .prepare(`SELECT * FROM sessions ${where} ORDER BY started_at DESC LIMIT @limit`)
+    .all(params);
+  return rows.map(rowToSession);
+}
+
+// The messages.tools and sessions.models columns are written by us as JSON arrays, but
+// treat them as untrusted on read: a corrupted row (partial write, manual edit, future
+// schema drift) should degrade to an empty list instead of throwing mid-render in the
+// CLI/MCP/web surfaces.
+export function parseJsonStringArray(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function hasAnyMessages(db: Database.Database): boolean {
+  const row = db.prepare("SELECT EXISTS(SELECT 1 FROM messages) AS present").get() as { present: number };
+  return Boolean(row.present);
+}
+
+export interface GetMessagesOptions {
+  limit?: number;
+  offset?: number;
+}
+
+export function getMessagesForSession(
+  db: Database.Database,
+  sessionId: string,
+  opts: GetMessagesOptions = {}
+) {
+  // SQLite treats a negative LIMIT as "no limit" — lets the default (no opts)
+  // case share one prepared statement with the paginated case.
+  const limit = opts.limit ?? -1;
+  const offset = opts.offset ?? 0;
+
+  return db
+    .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY ts ASC, id ASC LIMIT ? OFFSET ?")
+    .all(sessionId, limit, offset) as Array<{
+    id: number;
+    session_id: string;
+    uuid: string;
+    role: string;
+    ts: string;
+    text: string;
+    tools: string;
+    model: string | null;
+    is_sidechain: number;
+  }>;
+}
+
+export function listProjects(db: Database.Database): string[] {
+  const rows = db
+    .prepare("SELECT DISTINCT project_dir as projectDir FROM sessions ORDER BY project_dir ASC")
+    .all() as Array<{ projectDir: string }>;
+  return rows.map((r) => r.projectDir);
+}
+
+export function listRecentProjects(db: Database.Database, limit: number): string[] {
+  const rows = db
+    .prepare(
+      `SELECT project_dir as projectDir
+       FROM sessions
+       GROUP BY project_dir
+       ORDER BY MAX(started_at) DESC
+       LIMIT ?`
+    )
+    .all(limit) as Array<{ projectDir: string }>;
+  return rows.map((r) => r.projectDir);
+}
+
+export interface DailyMessageCount {
+  date: string; // YYYY-MM-DD
+  count: number;
+}
+
+export function getDailyMessageCounts(db: Database.Database, sinceIso: string): DailyMessageCount[] {
+  const rows = db
+    .prepare(
+      `SELECT substr(ts, 1, 10) as date, COUNT(*) as count
+       FROM messages
+       WHERE ts >= ?
+       GROUP BY date
+       ORDER BY date ASC`
+    )
+    .all(sinceIso) as DailyMessageCount[];
+  return rows;
+}
+
+export interface StatsRow {
+  projectDir: string;
+  sessions: number;
+  messages: number;
+  estCostUsd: number;
+}
+
+export function getStats(db: Database.Database, topN = 15): {
+  totalSessions: number;
+  totalMessages: number;
+  totalCostUsd: number;
+  byProject: StatsRow[];
+} {
+  const totals = db
+    .prepare(
+      "SELECT COUNT(*) as sessions, COALESCE(SUM(message_count),0) as messages, COALESCE(SUM(est_cost_usd),0) as cost FROM sessions"
+    )
+    .get() as { sessions: number; messages: number; cost: number };
+
+  const byProject = db
+    .prepare(
+      `SELECT project_dir as projectDir, COUNT(*) as sessions,
+              COALESCE(SUM(message_count),0) as messages,
+              COALESCE(SUM(est_cost_usd),0) as estCostUsd
+       FROM sessions
+       GROUP BY project_dir
+       ORDER BY estCostUsd DESC
+       LIMIT ?`
+    )
+    .all(topN) as StatsRow[];
+
+  return {
+    totalSessions: totals.sessions,
+    totalMessages: totals.messages,
+    totalCostUsd: totals.cost,
+    byProject,
+  };
+}
