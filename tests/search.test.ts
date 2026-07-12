@@ -164,9 +164,11 @@ describe("search", () => {
     expect(hits[0].estCostUsd).toBeGreaterThan(0);
   });
 
-  it("supports pagination via offset", () => {
-    const page0 = search(db, "fts5 trigger", { limit: 1, offset: 0 });
-    const page1 = search(db, "fts5 trigger", { limit: 1, offset: 1 });
+  it("supports pagination via offset (within a session via allMatches)", () => {
+    // Default grouping collapses same-session hits to one row, so paginating
+    // through them requires allMatches.
+    const page0 = search(db, "fts5 trigger", { limit: 1, offset: 0, allMatches: true });
+    const page1 = search(db, "fts5 trigger", { limit: 1, offset: 1, allMatches: true });
     expect(page0.length).toBe(1);
     expect(page1.length).toBe(1);
     expect(page0[0].uuid).not.toBe(page1[0].uuid);

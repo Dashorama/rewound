@@ -23,23 +23,53 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, uuid TEXT,
   role TEXT NOT NULL, ts TEXT, text TEXT NOT NULL, tools TEXT,
-  model TEXT, is_sidechain INTEGER DEFAULT 0
+  model TEXT, is_sidechain INTEGER DEFAULT 0,
+  tool_text TEXT NOT NULL DEFAULT ''  -- tool_result output, ranked below prose (see bm25 weights)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-  text, content='messages', content_rowid='id', tokenize='porter unicode61'
+  text, tool_text, content='messages', content_rowid='id', tokenize='porter unicode61'
 );
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-  INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
+  INSERT INTO messages_fts(rowid, text, tool_text) VALUES (new.id, new.text, new.tool_text);
 END;
 CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-  INSERT INTO messages_fts(messages_fts, rowid, text) VALUES('delete', old.id, old.text);
+  INSERT INTO messages_fts(messages_fts, rowid, text, tool_text) VALUES('delete', old.id, old.text, old.tool_text);
 END;
 CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
-  INSERT INTO messages_fts(messages_fts, rowid, text) VALUES('delete', old.id, old.text);
-  INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
+  INSERT INTO messages_fts(messages_fts, rowid, text, tool_text) VALUES('delete', old.id, old.text, old.tool_text);
+  INSERT INTO messages_fts(rowid, text, tool_text) VALUES (new.id, new.text, new.tool_text);
 END;
 `;
+
+export const CURRENT_SCHEMA_VERSION = 2;
+
+// bm25 column weights: a match in prose (typed user text, assistant text) is
+// worth 3x a match in tool output. Tool dumps stay searchable — error strings
+// often exist ONLY there — they just stop outranking a human sentence.
+export const PROSE_BM25_WEIGHT = 3.0;
+export const TOOL_BM25_WEIGHT = 1.0;
+
+// v1 (0.1.0) → v2: messages gains tool_text; FTS becomes two weighted columns.
+// Migrates IN PLACE from the content table — never by reparsing source files,
+// because archived sessions' transcripts may already be deleted. Legacy rows
+// keep their combined text in the prose column (they rank no worse than
+// before); newly indexed messages get the proper split.
+function migrateToV2(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    db.exec(`
+      ALTER TABLE messages ADD COLUMN tool_text TEXT NOT NULL DEFAULT '';
+      DROP TRIGGER IF EXISTS messages_ai;
+      DROP TRIGGER IF EXISTS messages_ad;
+      DROP TRIGGER IF EXISTS messages_au;
+      DROP TABLE IF EXISTS messages_fts;
+    `);
+    db.exec(SCHEMA_SQL);
+    db.exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild');`);
+    db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+  });
+  migrate();
+}
 
 export function resolveDbPath(cliFlag?: string): string {
   if (cliFlag) return cliFlag;
@@ -53,7 +83,17 @@ export function openDb(dbPath: string): Database.Database {
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
-  db.exec(SCHEMA_SQL);
+
+  const hasMessages = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+    .get();
+  const version = db.pragma("user_version", { simple: true }) as number;
+  if (hasMessages && version < 2) {
+    migrateToV2(db); // legacy v1 DBs never stamped user_version, so they read 0
+  } else {
+    db.exec(SCHEMA_SQL);
+    if (version < CURRENT_SCHEMA_VERSION) db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+  }
   return db;
 }
 
@@ -178,8 +218,8 @@ export function upsertSessionMessages(
     }
 
     const insertMessage = db.prepare(
-      `INSERT INTO messages (session_id, uuid, role, ts, text, tools, model, is_sidechain)
-       VALUES (@sessionId, @uuid, @role, @ts, @text, @tools, @model, @isSidechain)`
+      `INSERT INTO messages (session_id, uuid, role, ts, text, tools, model, is_sidechain, tool_text)
+       VALUES (@sessionId, @uuid, @role, @ts, @text, @tools, @model, @isSidechain, @toolText)`
     );
     for (const m of session.messages) {
       insertMessage.run({
@@ -188,6 +228,7 @@ export function upsertSessionMessages(
         role: m.role,
         ts: m.ts,
         text: m.text,
+        toolText: m.toolText ?? "",
         tools: JSON.stringify(m.tools ?? []),
         model: m.model ?? null,
         isSidechain: m.isSidechain ? 1 : 0,
@@ -300,6 +341,7 @@ export interface RawSearchOptions {
   since?: string; // ISO cutoff
   role?: "user" | "assistant";
   sidechains?: boolean;
+  allMatches?: boolean; // false (default): one best hit per session; true: every matching message
   limit?: number;
   offset?: number;
 }
@@ -316,6 +358,7 @@ export interface RawSearchHit {
   projectDir: string;
   title?: string;
   estCostUsd: number;
+  matchesInSession: number;
 }
 
 export function searchMessagesRaw(
@@ -349,16 +392,28 @@ export function searchMessagesRaw(
   // The 3rd/4th snippet() args below are literal \x01/\x02 bytes (invisible
   // here), not empty strings — sentinels consumed by cli.ts's highlightSnippet
   // and web/html.ts's highlightSnippetHtml to mark match boundaries.
+  // Default result shape is one row per session (its best-ranked hit) so the
+  // top of the list spans distinct moments instead of one chatty session;
+  // allMatches disassembles back to per-message rows. Both carry the session's
+  // total match count. snippet column -1 = auto-pick the best-matching column.
   const sql = `
-    SELECT m.session_id as sessionId, m.uuid as uuid, m.role as role, m.ts as ts,
-           m.text as text, m.model as model, m.is_sidechain as isSidechain,
-           s.project_dir as projectDir, s.title as title, s.est_cost_usd as estCostUsd,
-           snippet(messages_fts, 0, '', '', '...', 12) as snippet,
-           bm25(messages_fts) as rank
-    FROM messages_fts
-    JOIN messages m ON m.id = messages_fts.rowid
-    JOIN sessions s ON s.id = m.session_id
-    WHERE ${clauses.join(" AND ")}
+    SELECT * FROM (
+      SELECT hits.*,
+             row_number() OVER (PARTITION BY sessionId ORDER BY rank) AS rn,
+             count(*)     OVER (PARTITION BY sessionId) AS matchesInSession
+      FROM (
+        SELECT m.session_id as sessionId, m.uuid as uuid, m.role as role, m.ts as ts,
+               m.text as text, m.model as model, m.is_sidechain as isSidechain,
+               s.project_dir as projectDir, s.title as title, s.est_cost_usd as estCostUsd,
+               snippet(messages_fts, -1, '', '', '...', 12) as snippet,
+               bm25(messages_fts, ${PROSE_BM25_WEIGHT}, ${TOOL_BM25_WEIGHT}) as rank
+        FROM messages_fts
+        JOIN messages m ON m.id = messages_fts.rowid
+        JOIN sessions s ON s.id = m.session_id
+        WHERE ${clauses.join(" AND ")}
+      ) AS hits
+    )
+    ${opts.allMatches ? "" : "WHERE rn = 1"}
     ORDER BY rank
     LIMIT @limit OFFSET @offset
   `;
@@ -376,6 +431,7 @@ export function searchMessagesRaw(
     projectDir: r.projectDir,
     title: r.title ?? undefined,
     estCostUsd: r.estCostUsd,
+    matchesInSession: r.matchesInSession,
   }));
 }
 
