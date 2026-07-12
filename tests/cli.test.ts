@@ -27,10 +27,10 @@ function line(obj: unknown): string {
 }
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-cli-"));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-cli-"));
   projectDir = path.join(tmpDir, "-home-dev-myapp");
   fs.mkdirSync(projectDir, { recursive: true });
-  dbPath = path.join(tmpDir, "db", "agentgrep.db");
+  dbPath = path.join(tmpDir, "db", "rewound.db");
 
   const filePath = path.join(projectDir, "sess-cli-1.jsonl");
   fs.writeFileSync(
@@ -150,20 +150,20 @@ describe("runSearch", () => {
     runSearch("zzz_no_such_term", { db: dbPath, json: false }, (s) => lines.push(s));
     const out = lines.join("\n");
     expect(out).toContain("index covers through 2026-07-01T10:00:05.000Z");
-    expect(out).toMatch(/agentgrep index/);
+    expect(out).toMatch(/rewound index/);
   });
 
   it("does not print the freshness hint when there are hits", () => {
     const lines: string[] = [];
     runSearch("fts5 trigger", { db: dbPath, json: false }, (s) => lines.push(s));
-    expect(lines.join("\n")).not.toMatch(/agentgrep index/);
+    expect(lines.join("\n")).not.toMatch(/rewound index/);
   });
 
   it("does not print the freshness hint in JSON mode (machine output stays clean)", () => {
     const lines: string[] = [];
     runSearch("zzz_no_such_term", { db: dbPath, json: true }, (s) => lines.push(s));
     expect(() => JSON.parse(lines[0])).not.toThrow();
-    expect(lines.join("\n")).not.toMatch(/agentgrep index/);
+    expect(lines.join("\n")).not.toMatch(/rewound index/);
   });
 });
 
@@ -270,12 +270,12 @@ describe("mcp command wiring", () => {
 describe("isMainModule", () => {
   // npm always installs `bin` entries as symlinks (both `npm link` and a global/prefix
   // `npm install`), so process.argv[1] is the symlink path while import.meta.url resolves
-  // through it to the real file. Must compare real paths, not raw strings, or `npx agentgrep`
+  // through it to the real file. Must compare real paths, not raw strings, or `npx rewound`
   // silently no-ops (regression: previously used path.resolve() with no symlink resolution).
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-mainmod-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-mainmod-"));
   });
 
   afterEach(() => {
@@ -285,7 +285,7 @@ describe("isMainModule", () => {
   it("returns true when argv1 is a symlink pointing at the module's real file", () => {
     const real = path.join(tmpDir, "real-cli.js");
     fs.writeFileSync(real, "");
-    const link = path.join(tmpDir, "agentgrep");
+    const link = path.join(tmpDir, "rewound");
     fs.symlinkSync(real, link);
 
     expect(isMainModule(link, pathToFileURL(real).toString())).toBe(true);
@@ -342,7 +342,7 @@ describe("runServe", () => {
   });
 
   // Port-fallback logic is tested without listening: binding the real default
-  // port 4321 in a test collides with any live `agentgrep serve` on the machine
+  // port 4321 in a test collides with any live `rewound serve` on the machine
   // (EADDRINUSE — found the hard way while the author was dogfooding).
   it("falls back to the default port on a non-numeric port (e.g. a bad --port parse)", () => {
     expect(resolveServePort(NaN)).toBe(4321);

@@ -13,7 +13,7 @@ let db: Database.Database;
 let app: FastifyInstance;
 
 beforeEach(async () => {
-  dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-server-")), "test.db");
+  dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rewound-server-")), "test.db");
   db = openDb(dbPath);
 
   const sessionA: NormalizedSession = {
@@ -51,7 +51,7 @@ beforeEach(async () => {
   const sessionB: NormalizedSession = {
     id: "sess-b",
     source: "claude-code",
-    projectDir: "/home/dev/agentgrep",
+    projectDir: "/home/dev/rewound",
     filePath: "/x/sess-b.jsonl",
     title: "Unrelated work",
     gitBranch: "main",
@@ -147,7 +147,7 @@ describe("GET /", () => {
   });
 
   it("filters by project", async () => {
-    const res = await app.inject({ method: "GET", url: "/?q=topic&project=agentgrep" });
+    const res = await app.inject({ method: "GET", url: "/?q=topic&project=rewound" });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("Unrelated work");
     expect(res.body).not.toContain("Fix auth bug");
@@ -246,7 +246,7 @@ describe("GET /timeline", () => {
     const res = await app.inject({ method: "GET", url: "/timeline" });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("/home/dev/myapp");
-    expect(res.body).toContain("/home/dev/agentgrep");
+    expect(res.body).toContain("/home/dev/rewound");
   });
 
   it("caps the project list so an unbounded corpus can't blow up page weight", async () => {
@@ -277,7 +277,7 @@ describe("GET /stats", () => {
     const res = await app.inject({ method: "GET", url: "/stats" });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("/home/dev/myapp");
-    expect(res.body).toContain("/home/dev/agentgrep");
+    expect(res.body).toContain("/home/dev/rewound");
     expect(res.body).toMatch(/<svg/);
   });
 });

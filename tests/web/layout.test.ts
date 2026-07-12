@@ -4,7 +4,7 @@ import { renderLayout } from "../../src/web/layout.js";
 describe("renderLayout", () => {
   it("includes the page title in <title>", () => {
     const html = renderLayout({ title: "Search", activeNav: "search", body: "<p>hi</p>" });
-    expect(html).toContain("<title>Search · agentgrep</title>");
+    expect(html).toContain("<title>Search · rewound</title>");
   });
 
   it("escapes the title to prevent injection via session titles", () => {

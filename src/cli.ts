@@ -100,7 +100,7 @@ export function runSearch(query: string, opts: SearchCliOptions, log: Logger = d
     log("");
   }
   if (newestTs) {
-    log(`index covers through ${newestTs} — looking for something newer? run \`agentgrep index\` first`);
+    log(`index covers through ${newestTs} — looking for something newer? run \`rewound index\` first`);
   }
   log(`(${hits.length} ${hits.length === 1 ? "hit" : "hits"} in ${elapsedMs}ms)`);
 }
@@ -225,7 +225,7 @@ export async function runServe(opts: ServeCliOptions, log: Logger = defaultLog) 
   const host = opts.host ?? "127.0.0.1";
   const address = await app.listen({ port, host });
 
-  log(`agentgrep serve listening on ${address}`);
+  log(`rewound serve listening on ${address}`);
   if (host === "0.0.0.0") {
     log("bound to 0.0.0.0 (Tailscale/phone mode) — reachable from other devices on your network");
   }
@@ -234,7 +234,7 @@ export async function runServe(opts: ServeCliOptions, log: Logger = defaultLog) 
 
 export function buildProgram(): Command {
   const program = new Command();
-  program.name("agentgrep").description("Grep for everything your AI coding agents ever did.");
+  program.name("rewound").description("Grep for everything your AI coding agents ever did.");
 
   program
     .command("index")

@@ -340,7 +340,7 @@ export function renderLayout(opts: LayoutOptions): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${escapeHtml(opts.title)} · agentgrep</title>
+<title>${escapeHtml(opts.title)} · rewound</title>
 <link rel="icon" href="${FAVICON_HREF}" />
 <style>${STYLES}</style>
 <script>${COPY_SCRIPT}</script>

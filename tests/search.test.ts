@@ -11,7 +11,7 @@ let dbPath: string;
 let db: Database.Database;
 
 beforeEach(() => {
-  dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-search-")), "test.db");
+  dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rewound-search-")), "test.db");
   db = openDb(dbPath);
 
   const sessionA: NormalizedSession = {

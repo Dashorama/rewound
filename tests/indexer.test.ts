@@ -14,10 +14,10 @@ let db: Database.Database;
 let projectDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-idx-"));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-idx-"));
   projectDir = path.join(tmpDir, "-home-dev-myapp");
   fs.mkdirSync(projectDir, { recursive: true });
-  dbPath = path.join(tmpDir, "db", "agentgrep.db");
+  dbPath = path.join(tmpDir, "db", "rewound.db");
   db = openDb(dbPath);
 });
 

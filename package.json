@@ -1,16 +1,16 @@
 {
-  "name": "agentgrep",
+  "name": "rewound",
   "version": "0.2.0",
   "description": "Grep for everything your AI coding agents ever did. Local SQLite/FTS5 search over Claude Code session transcripts: CLI, MCP server, and web UI.",
   "license": "SEE LICENSE IN LICENSE",
   "author": "David Erner",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Dashorama/agentgrep.git"
+    "url": "git+https://github.com/Dashorama/rewound.git"
   },
-  "homepage": "https://github.com/Dashorama/agentgrep#readme",
+  "homepage": "https://github.com/Dashorama/rewound#readme",
   "bugs": {
-    "url": "https://github.com/Dashorama/agentgrep/issues"
+    "url": "https://github.com/Dashorama/rewound/issues"
   },
   "keywords": [
     "claude",
@@ -28,7 +28,7 @@
   ],
   "type": "module",
   "bin": {
-    "agentgrep": "dist/cli.js"
+    "rewound": "dist/cli.js"
   },
   "files": [
     "dist",

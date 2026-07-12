@@ -64,7 +64,7 @@ describe("ClaudeCodeAdapter", () => {
   });
 
   it("splits a mixed user message: typed text → text, tool_result → toolText", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-split-"));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-split-"));
     const filePath = path.join(tmp, "split-session.jsonl");
     const line = JSON.stringify({
       type: "user",
@@ -178,7 +178,7 @@ describe("ClaudeCodeAdapter", () => {
   });
 
   it("does not consume, parse, or error on a torn trailing line with no newline yet", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-torn-"));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-torn-"));
     const filePath = path.join(tmp, "torn-session.jsonl");
     const line1 = JSON.stringify({
       type: "user",
@@ -204,7 +204,7 @@ describe("ClaudeCodeAdapter", () => {
   });
 
   it("consumes nothing and reports no error when the entire read has no newline at all", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-torn2-"));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-torn2-"));
     const filePath = path.join(tmp, "torn2-session.jsonl");
     fs.writeFileSync(filePath, '{"type":"user","uuid":"u1","message":{"role":"user"'); // no newline anywhere
 
@@ -217,7 +217,7 @@ describe("ClaudeCodeAdapter", () => {
   });
 
   it("does not corrupt multi-byte UTF-8 content sitting right at a byte-offset split", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-utf8-"));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-utf8-"));
     const filePath = path.join(tmp, "utf8-session.jsonl");
     const line1 = JSON.stringify({
       type: "user",

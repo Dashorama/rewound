@@ -6,35 +6,35 @@ Use a real (or realistic) `~/.claude/projects` corpus — do not fabricate outpu
 
 1. **Set the scene.**
    ```bash
-   agentgrep stats
+   rewound stats
    ```
    Shows total sessions/messages/estimated cost across every project — establishes "this is your real history, already indexed."
 
 2. **Cold index, for viewers who haven't run it yet.**
    ```bash
-   agentgrep index
+   rewound index
    ```
    Narration: "Indexes every Claude Code session on disk. Read-only, incremental after this."
 
 3. **The core moment: search.**
    ```bash
-   agentgrep search "fts5 trigger bug"
+   rewound search "fts5 trigger bug"
    ```
    Narration: "ripgrep-style hits across every session, ever. Each one has a resume command."
 
 4. **Filter it.**
    ```bash
-   agentgrep search "auth" --since 7d --project myapp
+   rewound search "auth" --since 7d --project myapp
    ```
    Narration: "Filter by project, by time window, by role."
 
 5. **Show a session.**
    ```bash
-   agentgrep show <session-id-prefix>
+   rewound show <session-id-prefix>
    ```
    Narration: "Full readable transcript, not raw JSONL."
 
-6. **The moat feature: MCP.** Cut to a Claude Code session with agentgrep configured as an MCP server. Type a prompt like:
+6. **The moat feature: MCP.** Cut to a Claude Code session with rewound configured as an MCP server. Type a prompt like:
    > "Have we dealt with a database migration failure like this before?"
 
    Let the agent call `search_history`, then `get_session_excerpt` on a hit, and show it citing the actual prior session in its answer.
@@ -43,7 +43,7 @@ Use a real (or realistic) `~/.claude/projects` corpus — do not fabricate outpu
 
 7. **Close on privacy.**
    ```bash
-   agentgrep stats --json | head -c 200
+   rewound stats --json | head -c 200
    ```
    Narration: "Everything you just saw ran against a local SQLite file. No network calls, no telemetry, nothing left this machine."
 

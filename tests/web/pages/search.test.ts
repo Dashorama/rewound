@@ -9,7 +9,7 @@ function baseOpts(overrides: Partial<Parameters<typeof renderSearchPage>[0]> = {
     role: "",
     sidechains: false,
     hits: [],
-    projects: ["/home/dev/agentgrep", "/home/dev/myapp"],
+    projects: ["/home/dev/rewound", "/home/dev/myapp"],
     page: 1,
     hasMore: false,
     ...overrides,
@@ -149,7 +149,7 @@ describe("renderSearchPage", () => {
     expect(html).toContain('value="/home/dev/myapp"');
     expect(html).toContain('list="project-options"');
     expect(html).toContain('<option value="/home/dev/myapp">');
-    expect(html).toContain('<option value="/home/dev/agentgrep">');
+    expect(html).toContain('<option value="/home/dev/rewound">');
   });
 
   it("escapes a malicious project name in the datalist (XSS safety)", () => {

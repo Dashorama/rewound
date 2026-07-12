@@ -26,7 +26,7 @@ describe("renderStatsPage", () => {
     totalCostUsd: 12.3456,
     byProject: [
       { projectDir: "/home/dev/myapp", sessions: 6, messages: 300, estCostUsd: 8.0 },
-      { projectDir: "/home/dev/agentgrep", sessions: 4, messages: 200, estCostUsd: 4.3456 },
+      { projectDir: "/home/dev/rewound", sessions: 4, messages: 200, estCostUsd: 4.3456 },
     ],
     dailyCounts: [
       { date: "2026-07-10", count: 5 },
@@ -50,7 +50,7 @@ describe("renderStatsPage", () => {
   it("renders a table row per project with sessions, messages and cost", () => {
     const html = renderStatsPage(baseOpts);
     expect(html).toContain("/home/dev/myapp");
-    expect(html).toContain("/home/dev/agentgrep");
+    expect(html).toContain("/home/dev/rewound");
     expect(html).toContain("$8.0000");
   });
 

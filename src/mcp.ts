@@ -83,7 +83,7 @@ function textResult(text: string, isError = false) {
 }
 
 export function createMcpServer(db: Database.Database): McpServer {
-  const server = new McpServer({ name: "agentgrep", version: "0.1.0" });
+  const server = new McpServer({ name: "rewound", version: "0.1.0" });
 
   server.registerTool(
     "search_history",
@@ -112,7 +112,7 @@ export function createMcpServer(db: Database.Database): McpServer {
       if (hits.length === 0) {
         if (!hasAnyMessages(db)) {
           return textResult(
-            `No matches for "${query}" — the index is empty. Run \`agentgrep index\` on this machine first to index its session transcripts.`
+            `No matches for "${query}" — the index is empty. Run \`rewound index\` on this machine first to index its session transcripts.`
           );
         }
         return textResult(`No matches for "${query}".`);

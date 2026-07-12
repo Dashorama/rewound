@@ -34,7 +34,7 @@ async function connectClient(database: Database.Database): Promise<{ client: Cli
 }
 
 beforeEach(async () => {
-  dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-mcp-")), "test.db");
+  dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rewound-mcp-")), "test.db");
   db = openDb(dbPath);
 
   const sessionA: NormalizedSession = {
@@ -188,8 +188,8 @@ describe("search_history", () => {
     expect(text(result)).toMatch(/no match/i);
   });
 
-  it("hints to run `agentgrep index` when the database is empty (fresh-install UX)", async () => {
-    const emptyDbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-mcp-empty-")), "empty.db");
+  it("hints to run `rewound index` when the database is empty (fresh-install UX)", async () => {
+    const emptyDbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rewound-mcp-empty-")), "empty.db");
     const emptyDb = openDb(emptyDbPath);
     const connected = await connectClient(emptyDb);
     try {
@@ -197,7 +197,7 @@ describe("search_history", () => {
         name: "search_history",
         arguments: { query: "anything" },
       });
-      expect(text(result)).toMatch(/agentgrep index/);
+      expect(text(result)).toMatch(/rewound index/);
     } finally {
       await connected.close();
       emptyDb.close();
@@ -210,7 +210,7 @@ describe("search_history", () => {
       name: "search_history",
       arguments: { query: "zzz_no_such_term" },
     });
-    expect(text(result)).not.toMatch(/agentgrep index/);
+    expect(text(result)).not.toMatch(/rewound index/);
   });
 
   it("never throws on query syntax characters like : and \"", async () => {

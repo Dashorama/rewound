@@ -5,6 +5,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import {
   openDb,
+  resolveDbPath,
   getFileRecord,
   upsertFileRecord,
   getSession,
@@ -494,5 +495,51 @@ describe("session-grouped search results", () => {
     const hits = searchMessagesRaw(db, '"webhook"', { allMatches: true });
     expect(hits.length).toBe(4);
     expect(hits.filter((h) => h.sessionId === "sess-many").every((h) => h.matchesInSession === 3)).toBe(true);
+  });
+});
+
+describe("resolveDbPath (rename-safe resolution)", () => {
+  function makeHome(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "rewound-home-"));
+  }
+
+  it("prefers an explicit CLI flag over everything", () => {
+    expect(resolveDbPath("/flag/db.sqlite", { home: "/h", env: { REWOUND_DB: "/env/db" } })).toBe(
+      "/flag/db.sqlite"
+    );
+  });
+
+  it("honors REWOUND_DB, then legacy AGENTGREP_DB as fallback", () => {
+    expect(resolveDbPath(undefined, { home: "/h", env: { REWOUND_DB: "/new/db" } })).toBe("/new/db");
+    expect(resolveDbPath(undefined, { home: "/h", env: { AGENTGREP_DB: "/old/db" } })).toBe("/old/db");
+    expect(
+      resolveDbPath(undefined, { home: "/h", env: { REWOUND_DB: "/new/db", AGENTGREP_DB: "/old/db" } })
+    ).toBe("/new/db");
+  });
+
+  it("defaults to ~/.rewound/rewound.db on a fresh machine", () => {
+    const home = makeHome();
+    expect(resolveDbPath(undefined, { home, env: {} })).toBe(path.join(home, ".rewound", "rewound.db"));
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("keeps using a pre-rename ~/.agentgrep/agentgrep.db when it exists and no new DB does", () => {
+    const home = makeHome();
+    fs.mkdirSync(path.join(home, ".agentgrep"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".agentgrep", "agentgrep.db"), "");
+    expect(resolveDbPath(undefined, { home, env: {} })).toBe(
+      path.join(home, ".agentgrep", "agentgrep.db")
+    );
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("prefers the new location once it exists, even if the legacy DB is still around", () => {
+    const home = makeHome();
+    fs.mkdirSync(path.join(home, ".agentgrep"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".agentgrep", "agentgrep.db"), "");
+    fs.mkdirSync(path.join(home, ".rewound"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".rewound", "rewound.db"), "");
+    expect(resolveDbPath(undefined, { home, env: {} })).toBe(path.join(home, ".rewound", "rewound.db"));
+    fs.rmSync(home, { recursive: true, force: true });
   });
 });

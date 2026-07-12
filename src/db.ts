@@ -71,10 +71,24 @@ function migrateToV2(db: Database.Database): void {
   migrate();
 }
 
-export function resolveDbPath(cliFlag?: string): string {
+// Resolution order: --db flag > REWOUND_DB > AGENTGREP_DB (pre-rename compat) >
+// existing new-location DB > existing pre-rename DB > fresh new-location default.
+// The legacy fallbacks exist because rewound shipped its first releases as
+// "agentgrep"; a rename must never orphan an existing index.
+export function resolveDbPath(
+  cliFlag?: string,
+  opts: { home?: string; env?: NodeJS.ProcessEnv } = {}
+): string {
   if (cliFlag) return cliFlag;
-  if (process.env.AGENTGREP_DB) return process.env.AGENTGREP_DB;
-  return path.join(os.homedir(), ".agentgrep", "agentgrep.db");
+  const env = opts.env ?? process.env;
+  if (env.REWOUND_DB) return env.REWOUND_DB;
+  if (env.AGENTGREP_DB) return env.AGENTGREP_DB;
+  const home = opts.home ?? os.homedir();
+  const newPath = path.join(home, ".rewound", "rewound.db");
+  if (fs.existsSync(newPath)) return newPath;
+  const legacyPath = path.join(home, ".agentgrep", "agentgrep.db");
+  if (fs.existsSync(legacyPath)) return legacyPath;
+  return newPath;
 }
 
 export function openDb(dbPath: string): Database.Database {

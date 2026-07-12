@@ -4,7 +4,7 @@ import { renderTimelinePage } from "../../../src/web/pages/timeline.js";
 describe("renderTimelinePage", () => {
   it("lists project links when no project is selected", () => {
     const html = renderTimelinePage({
-      projects: ["/home/dev/myapp", "/home/dev/agentgrep"],
+      projects: ["/home/dev/myapp", "/home/dev/rewound"],
       selectedProject: undefined,
       sessions: [],
     });
