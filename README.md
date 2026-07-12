@@ -37,7 +37,8 @@ npm install -g rewound
 rewound index
 ```
 
-Or without installing: `npx rewound index`. Node 20+ required.
+Or without installing: `npx rewound index`. Node 20+ required. The CLI is also installed
+as `rw` — same commands, fewer keystrokes (`rw search "auth bug"`).
 
 <details>
 <summary>Build from source</summary>

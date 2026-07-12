@@ -413,3 +413,11 @@ describe("search output ergonomics (grouped hits, snippet cleanup)", () => {
     expect(searchCmd.options.some((o) => o.long === "--all-matches")).toBe(true);
   });
 });
+
+describe("bin aliases", () => {
+  it("ships both the full command and the rw short alias, pointing at the same entry", () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
+    expect(pkg.bin.rewound).toBe("dist/cli.js");
+    expect(pkg.bin.rw).toBe("dist/cli.js");
+  });
+});

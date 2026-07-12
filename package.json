@@ -28,7 +28,8 @@
   ],
   "type": "module",
   "bin": {
-    "rewound": "dist/cli.js"
+    "rewound": "dist/cli.js",
+    "rw": "dist/cli.js"
   },
   "files": [
     "dist",
