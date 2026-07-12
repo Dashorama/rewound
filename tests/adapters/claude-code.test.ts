@@ -55,11 +55,49 @@ describe("ClaudeCodeAdapter", () => {
     expect(msg.usage).toEqual({ input: 120, output: 45, cacheRead: 10, cacheWrite: 5 });
   });
 
-  it("indexes tool_result text from block user content", () => {
+  it("routes tool_result text into toolText, keeping prose text clean", () => {
     const session = adapter.parse(FIXTURE);
     const msg = session.messages.find((m) => m.uuid === "u2")!;
     expect(msg.role).toBe("user");
-    expect(msg.text).toContain("export function login()");
+    expect(msg.toolText).toContain("export function login()");
+    expect(msg.text).not.toContain("export function login()");
+  });
+
+  it("splits a mixed user message: typed text → text, tool_result → toolText", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-split-"));
+    const filePath = path.join(tmp, "split-session.jsonl");
+    const line = JSON.stringify({
+      type: "user",
+      uuid: "u1",
+      timestamp: "2026-07-01T10:00:00.000Z",
+      cwd: "/home/dev/myapp",
+      isSidechain: false,
+      sessionId: "split-session",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "here is what the test printed" },
+          { type: "tool_result", content: "FAIL src/thing.test.ts giant dump of output" },
+        ],
+      },
+    });
+    fs.writeFileSync(filePath, line + "\n");
+
+    const msg = adapter.parse(filePath).messages[0];
+    expect(msg.text).toBe("here is what the test printed");
+    expect(msg.toolText).toBe("FAIL src/thing.test.ts giant dump of output");
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("leaves toolText empty for plain string user content and for assistant messages", () => {
+    const session = adapter.parse(FIXTURE);
+    const u1 = session.messages.find((m) => m.uuid === "u1")!;
+    const a1 = session.messages.find((m) => m.uuid === "a1")!;
+    expect(u1.toolText ?? "").toBe("");
+    expect(a1.toolText ?? "").toBe("");
+    // assistant prose (text + thinking) stays in text
+    expect(a1.text).toContain("Let me look at the login flow.");
   });
 
   it("sets session title from ai-title record", () => {

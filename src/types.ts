@@ -2,7 +2,10 @@ export interface NormalizedMessage {
   uuid: string;
   role: "user" | "assistant";
   ts: string; // ISO timestamp
-  text: string; // extracted searchable text ("" if none)
+  text: string; // extracted searchable prose — typed user text, assistant text/thinking ("" if none)
+  // tool_result output carried by this message. Kept apart from `text` so search
+  // can rank a human sentence above a shell dump that merely mentions the term.
+  toolText?: string;
   tools: string[]; // tool_use names in this message
   model?: string;
   isSidechain: boolean;
