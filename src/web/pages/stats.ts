@@ -63,14 +63,14 @@ function renderProjectTable(rows: StatsPageProjectRow[]): string {
         `<tr><td>${escapeHtml(r.projectDir)}</td><td class="tabular">${r.sessions}</td><td class="tabular">${r.messages}</td><td class="cost">$${r.estCostUsd.toFixed(4)}</td></tr>`
     )
     .join("");
-  return `<table><thead><tr><th>Project</th><th>Sessions</th><th>Messages</th><th>Est. cost</th></tr></thead><tbody>${body}</tbody></table>`;
+  return `<table><thead><tr><th>Project</th><th>Sessions</th><th>Messages</th><th>Est. API cost</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
 function renderStatCards(opts: StatsPageOptions): string {
   const cards: Array<{ value: string; label: string }> = [
     { value: String(opts.totalSessions), label: "Sessions" },
     { value: String(opts.totalMessages), label: "Messages" },
-    { value: `$${opts.totalCostUsd.toFixed(4)}`, label: "Estimated cost" },
+    { value: `$${opts.totalCostUsd.toFixed(4)}`, label: "Est. API cost" },
   ];
   return `<div class="stat-cards">${cards
     .map(
@@ -84,5 +84,6 @@ export function renderStatsPage(opts: StatsPageOptions): string {
   const summary = renderStatCards(opts);
   const sparkline = `<h2>Messages / day (last ${opts.dailyCounts.length || 30} days)</h2>${renderSparklineSvg(opts.dailyCounts)}`;
 
-  return `${summary}<h2>By project (${opts.byProject.length})</h2>${renderProjectTable(opts.byProject)}${sparkline}`;
+  const costNote = `<p class="muted">Cost figures are token usage valued at Anthropic API list prices — on a subscription plan your real spend is far lower.</p>`;
+  return `${summary}${costNote}<h2>By project (${opts.byProject.length})</h2>${renderProjectTable(opts.byProject)}${sparkline}`;
 }

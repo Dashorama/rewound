@@ -33,7 +33,7 @@ function renderSessionRow(s: TimelineSession): string {
   return `
 <article class="card session-row">
   <div class="session-row-title"><a class="tap-target" href="/session/${encodeURIComponent(s.id)}">${heading}</a></div>
-  <div class="muted">${escapeHtml(s.startedAt ?? "?")} · <span class="count">${s.messageCount} msgs</span> · <span class="cost">$${s.estCostUsd.toFixed(4)}</span></div>
+  <div class="muted">${escapeHtml(s.startedAt ?? "?")} · <span class="count">${s.messageCount} msgs</span> · <span class="cost" title="Estimated cost at API list prices">$${s.estCostUsd.toFixed(4)}</span></div>
 </article>`;
 }
 

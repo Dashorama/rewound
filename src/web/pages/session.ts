@@ -74,7 +74,7 @@ export function renderSessionPage(
   <div class="muted">
     ${escapeHtml(session.projectDir)} · branch ${escapeHtml(session.gitBranch ?? "?")} ·
     ${escapeHtml(session.startedAt ?? "?")} &ndash; ${escapeHtml(session.endedAt ?? "?")} ·
-    ${session.messageCount} messages · $${session.estCostUsd.toFixed(4)} ·
+    ${session.messageCount} messages · <span title="Estimated cost at API list prices">est. API $${session.estCostUsd.toFixed(4)}</span> ·
     ${session.models.map(escapeHtml).join(", ") || "no model recorded"}
   </div>
   <p class="resume-row">

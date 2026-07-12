@@ -112,7 +112,7 @@ export function createMcpServer(db: Database.Database): McpServer {
       const blocks = hits.map((h) =>
         [
           `session: ${h.sessionId}${h.title ? ` (${h.title})` : ""}`,
-          `project: ${h.projectDir}  date: ${h.ts}`,
+          `project: ${h.projectDir}  date: ${h.ts}  match_uuid: ${h.uuid}`,
           centeredExcerpt(h.text, query, EXCERPT_CHARS),
         ].join("\n")
       );

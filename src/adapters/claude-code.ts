@@ -183,6 +183,7 @@ export class ClaudeCodeAdapter implements SourceAdapter {
       id,
       source: "claude-code",
       projectDir: projectDir ?? decodeProjectDir(filePath),
+      projectDirSource: projectDir ? "cwd" : "fallback",
       filePath,
       title,
       gitBranch,

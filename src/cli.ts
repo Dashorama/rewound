@@ -11,6 +11,7 @@ import {
   getMessagesForSession,
   listSessions,
   getStats,
+  getNewestMessageTs,
   parseJsonStringArray,
 } from "./db.js";
 import { ClaudeCodeAdapter } from "./adapters/claude-code.js";
@@ -71,6 +72,10 @@ export function runSearch(query: string, opts: SearchCliOptions, log: Logger = d
   const start = Date.now();
   const db = openDb(resolveDbPath(opts.db));
   const hits = search(db, query, opts);
+  // A stale index misses recent work silently; on a zero-hit search, say how far
+  // the index actually covers so "it's not indexed yet" is distinguishable from
+  // "it doesn't exist". Text mode only — JSON output stays machine-clean.
+  const newestTs = !opts.json && hits.length === 0 ? getNewestMessageTs(db) : undefined;
   db.close();
   const elapsedMs = Date.now() - start;
 
@@ -89,6 +94,9 @@ export function runSearch(query: string, opts: SearchCliOptions, log: Logger = d
     log(highlightSnippet(hit.snippet));
     log(`  ↳ resume: claude --resume ${hit.sessionId}`);
     log("");
+  }
+  if (newestTs) {
+    log(`index covers through ${newestTs} — looking for something newer? run \`agentgrep index\` first`);
   }
   log(`(${hits.length} ${hits.length === 1 ? "hit" : "hits"} in ${elapsedMs}ms)`);
 }
@@ -111,7 +119,7 @@ export function runSessions(opts: SessionsCliOptions, log: Logger = defaultLog):
   }
   for (const r of rows) {
     log(
-      `${r.startedAt ?? "?"}  ${r.projectDir}  ${r.title ?? r.id}  msgs=${r.messageCount}  cost=$${r.estCostUsd.toFixed(4)}`
+      `${r.startedAt ?? "?"}  ${r.projectDir}  ${r.title ?? r.id}  msgs=${r.messageCount}  estApiCost=$${r.estCostUsd.toFixed(4)}`
     );
   }
 }
@@ -173,9 +181,11 @@ export function runStats(opts: StatsCliOptions, log: Logger = defaultLog): void 
     log(JSON.stringify(stats));
     return;
   }
-  log(`sessions: ${stats.totalSessions}  messages: ${stats.totalMessages}  est cost: $${stats.totalCostUsd.toFixed(2)}`);
+  // "est. API cost" not "cost": figures are token usage at API list prices — a heavy
+  // subscription user's total can read like absurd spend without that framing.
+  log(`sessions: ${stats.totalSessions}  messages: ${stats.totalMessages}  est. API cost: $${stats.totalCostUsd.toFixed(2)}`);
   for (const p of stats.byProject) {
-    log(`  ${p.projectDir}: sessions=${p.sessions} messages=${p.messages} cost=$${p.estCostUsd.toFixed(4)}`);
+    log(`  ${p.projectDir}: sessions=${p.sessions} messages=${p.messages} estApiCost=$${p.estCostUsd.toFixed(4)}`);
   }
 }
 

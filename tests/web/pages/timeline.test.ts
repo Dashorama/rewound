@@ -60,6 +60,17 @@ describe("renderTimelinePage", () => {
     expect(html).toContain("$0.1000");
   });
 
+  it("annotates the compact cost figure as API list price via tooltip", () => {
+    const html = renderTimelinePage({
+      projects: ["/home/dev/myapp"],
+      selectedProject: "/home/dev/myapp",
+      sessions: [
+        { id: "sess-1", title: "First", startedAt: "2026-07-01T10:00:00.000Z", estCostUsd: 0.1, messageCount: 3 },
+      ],
+    });
+    expect(html).toMatch(/<span class="cost"[^>]*title="[^"]*API list price[^"]*"/i);
+  });
+
   it("links each session to its detail page", () => {
     const html = renderTimelinePage({
       projects: ["/home/dev/myapp"],

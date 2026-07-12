@@ -54,6 +54,14 @@ describe("renderStatsPage", () => {
     expect(html).toContain("$8.0000");
   });
 
+  it("labels cost figures as estimated API cost with a list-price footnote (not real spend)", () => {
+    const html = renderStatsPage(baseOpts);
+    // Heavy subscription users see totals like $74K here — the math is API list price,
+    // and the label must say so or the number reads as a bug.
+    expect(html).toContain("Est. API cost");
+    expect(html).toMatch(/API list price/i);
+  });
+
   it("reflects the actual number of project rows in the heading, not a hardcoded count", () => {
     const html = renderStatsPage(baseOpts);
     expect(html).toMatch(/By project \(2\)/);

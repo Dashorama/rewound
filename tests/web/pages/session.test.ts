@@ -35,6 +35,11 @@ describe("renderSessionPage", () => {
     expect(html).toContain("$0.0500");
   });
 
+  it("labels the header cost as estimated API cost, not real spend", () => {
+    const html = renderSessionPage(baseSession(), [plainMessage]);
+    expect(html).toMatch(/est\. API \$0\.0500/);
+  });
+
   it("escapes a malicious session title (XSS safety)", () => {
     const html = renderSessionPage(baseSession({ title: "<script>alert(1)</script>" }), [plainMessage]);
     expect(html).not.toContain("<script>alert(1)</script>");

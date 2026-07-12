@@ -13,6 +13,11 @@ export interface NormalizedSession {
   id: string; // sessionId (filename stem)
   source: "claude-code"; // adapter id; more later
   projectDir: string; // decoded, e.g. /home/dev/myapp
+  // How projectDir was derived. "cwd" = from a message's cwd field (authoritative);
+  // "fallback" = naive dash→slash decode of the transcript dir name, which is ambiguous
+  // for hyphenated project names. Consumers must never let a fallback-derived value
+  // overwrite a stored cwd-derived one. Absent = treat as fallback.
+  projectDirSource?: "cwd" | "fallback";
   filePath: string;
   title?: string;
   gitBranch?: string;

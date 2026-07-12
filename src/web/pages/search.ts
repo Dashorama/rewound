@@ -98,7 +98,7 @@ function renderHitCard(hit: SearchPageHit, index: number): string {
   <h3 class="hit-title"><a class="tap-target" href="/session/${encodeURIComponent(hit.sessionId)}">${heading}</a></h3>
   <p class="snippet">${highlightSnippetHtml(hit.snippet)}</p>
   <div class="hit-footer">
-    <span class="cost muted">$${hit.estCostUsd.toFixed(4)}</span>
+    <span class="cost muted" title="Estimated cost at API list prices">$${hit.estCostUsd.toFixed(4)}</span>
     <code id="${resumeId}">${escapeHtml(resumeCmd)}</code>
     <button type="button" class="copy-btn" data-copy-target="${resumeId}">Copy</button>
   </div>

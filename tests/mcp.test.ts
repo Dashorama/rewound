@@ -149,6 +149,17 @@ describe("search_history", () => {
     expect(text(result)).toMatch(/get_session_excerpt/);
   });
 
+  it("emits each hit's match_uuid so the get_session_excerpt drill-down it advertises is actually callable", async () => {
+    const result = await client.callTool({
+      name: "search_history",
+      arguments: { query: "fts5 trigger" },
+    });
+    const out = text(result);
+    // The hint says get_session_excerpt(session_id, match_uuid) — without the uuid in the
+    // payload an agent can only fetch the start of the session, not context around the hit.
+    expect(out).toMatch(/match_uuid: (u1|a1)/);
+  });
+
   it("respects the project filter", async () => {
     const result = await client.callTool({
       name: "search_history",

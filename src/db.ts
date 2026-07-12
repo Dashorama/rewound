@@ -196,6 +196,13 @@ export function upsertSessionMessages(
 
     const existing = opts.mode === "append" ? getSession(db, session.id) : undefined;
 
+    // A fallback-derived projectDir (naive dash→slash dir-name decode) must never
+    // clobber a stored value: incremental append chunks with no cwd-bearing lines
+    // (e.g. session-end meta records) would otherwise permanently mangle hyphenated
+    // project names ("/home/dev/my-app" → "/home/dev/my/app"). cwd-derived always wins.
+    const projectDir =
+      session.projectDirSource === "cwd" ? session.projectDir : existing?.projectDir ?? session.projectDir;
+
     const modelsSeen = new Set(existing?.models ?? []);
     let costDelta = 0;
     for (const m of session.messages) {
@@ -268,7 +275,7 @@ export function upsertSessionMessages(
     ).run({
       id: session.id,
       source: session.source,
-      projectDir: session.projectDir,
+      projectDir,
       filePath: session.filePath,
       title: title ?? null,
       gitBranch: gitBranch ?? null,
@@ -483,6 +490,14 @@ export interface StatsRow {
   sessions: number;
   messages: number;
   estCostUsd: number;
+}
+
+// Timestamp of the newest indexed message — i.e. how far the index "covers".
+// Used to hint at staleness: a search can only miss recent work silently, so
+// zero-hit UX should say what the index has actually seen.
+export function getNewestMessageTs(db: Database.Database): string | undefined {
+  const row = db.prepare(`SELECT MAX(ts) as maxTs FROM messages`).get() as { maxTs: string | null };
+  return row?.maxTs ?? undefined;
 }
 
 export function getStats(db: Database.Database, topN = 15): {

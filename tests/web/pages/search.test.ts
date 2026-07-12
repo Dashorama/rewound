@@ -92,6 +92,11 @@ describe("renderSearchPage", () => {
     expect(html).toContain('href="/session/sess-1"');
   });
 
+  it("annotates each hit's cost figure as API list price via tooltip", () => {
+    const html = renderSearchPage(baseOpts({ q: "auth bug", hits: [sampleHit] }));
+    expect(html).toMatch(/<span class="cost[^"]*"[^>]*title="[^"]*API list price[^"]*"/i);
+  });
+
   it("shows the message role in each result card's metadata row", () => {
     const html = renderSearchPage(
       baseOpts({ q: "auth bug", hits: [{ ...sampleHit, role: "assistant" }] })

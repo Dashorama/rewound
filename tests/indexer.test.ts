@@ -45,6 +45,59 @@ function userLine(sessionId: string, uuid: string, text: string, ts: string): st
   });
 }
 
+describe("projectDir decode stability (hyphenated project names)", () => {
+  // Claude Code encodes "/" as "-" in transcript dir names, so "-home-dev-my-app" is
+  // ambiguous between /home/dev/my-app and /home/dev/my/app. Message cwd fields are the
+  // only reliable source. Found on a real corpus: a live session's final indexed chunk
+  // contained only cwd-less meta lines, and the append-mode upsert clobbered the correct
+  // cwd-derived project_dir with the naive dash-decode — permanently, since the file
+  // never grew again. project_dir splits then break --project filters and stats grouping.
+  const adapter = new ClaudeCodeAdapter();
+  let hyphenDir: string;
+
+  beforeEach(() => {
+    hyphenDir = path.join(tmpDir, "-home-dev-my-app");
+    fs.mkdirSync(hyphenDir, { recursive: true });
+  });
+
+  function hyphenUserLine(sessionId: string, uuid: string, text: string, ts: string): string {
+    return JSON.stringify({
+      type: "user",
+      uuid,
+      timestamp: ts,
+      cwd: "/home/dev/my-app",
+      gitBranch: "main",
+      isSidechain: false,
+      sessionId,
+      message: { role: "user", content: text },
+    });
+  }
+
+  it("keeps the cwd-derived projectDir when an appended chunk has no cwd-bearing lines", () => {
+    const filePath = path.join(hyphenDir, "h1.jsonl");
+    fs.writeFileSync(filePath, hyphenUserLine("h1", "u1", "first", "2026-07-01T10:00:00.000Z") + "\n");
+    indexAll(db, adapter, [tmpDir]);
+    expect(getSession(db, "h1")!.projectDir).toBe("/home/dev/my-app");
+
+    // Session-end style meta line: no cwd anywhere in the appended chunk.
+    fs.appendFileSync(filePath, JSON.stringify({ type: "ai-title", aiTitle: "T", sessionId: "h1" }) + "\n");
+    indexAll(db, adapter, [tmpDir]);
+    expect(getSession(db, "h1")!.projectDir).toBe("/home/dev/my-app");
+  });
+
+  it("upgrades a fallback-decoded projectDir once a cwd-bearing line appears", () => {
+    const filePath = path.join(hyphenDir, "h2.jsonl");
+    // A just-started session: only cwd-less meta lines flushed so far.
+    fs.writeFileSync(filePath, JSON.stringify({ type: "last-prompt", sessionId: "h2" }) + "\n");
+    indexAll(db, adapter, [tmpDir]);
+    expect(getSession(db, "h2")!.projectDir).toBe("/home/dev/my/app"); // best available: fallback
+
+    fs.appendFileSync(filePath, hyphenUserLine("h2", "u2", "hello", "2026-07-01T10:01:00.000Z") + "\n");
+    indexAll(db, adapter, [tmpDir]);
+    expect(getSession(db, "h2")!.projectDir).toBe("/home/dev/my-app"); // corrected from cwd
+  });
+});
+
 describe("indexer", () => {
   const adapter = new ClaudeCodeAdapter();
 

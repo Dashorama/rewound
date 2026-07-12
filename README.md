@@ -67,6 +67,8 @@ agentgrep stats [--json]
 
 `search` supports relative time windows (`--since 7d`), project filtering, and role filtering. Query terms are quoted automatically so punctuation never throws an FTS syntax error; pass `--raw` if you want real FTS5 query syntax.
 
+Two search tips from real-corpus testing: scope with `--project` when your memory is project-specific — cross-cutting terms (preferences, conventions, tool names) appear in *every* project's sessions and will drown an unscoped query. And run `agentgrep index` before hunting for recent work; indexing is incremental and takes well under a second when little has changed.
+
 ### MCP server — available now
 
 `agentgrep mcp` starts a stdio MCP server so a Claude Code agent can search its own history mid-session — the moat feature. Three tools:

@@ -144,6 +144,27 @@ describe("runSearch", () => {
     runSearch("zzz_no_such_term", { db: dbPath, json: false }, (s) => lines.push(s));
     expect(lines[lines.length - 1]).toMatch(/\(0 hits in \d+ms\)/);
   });
+
+  it("hints about index freshness on zero hits (a stale index misses recent work silently)", () => {
+    const lines: string[] = [];
+    runSearch("zzz_no_such_term", { db: dbPath, json: false }, (s) => lines.push(s));
+    const out = lines.join("\n");
+    expect(out).toContain("index covers through 2026-07-01T10:00:05.000Z");
+    expect(out).toMatch(/agentgrep index/);
+  });
+
+  it("does not print the freshness hint when there are hits", () => {
+    const lines: string[] = [];
+    runSearch("fts5 trigger", { db: dbPath, json: false }, (s) => lines.push(s));
+    expect(lines.join("\n")).not.toMatch(/agentgrep index/);
+  });
+
+  it("does not print the freshness hint in JSON mode (machine output stays clean)", () => {
+    const lines: string[] = [];
+    runSearch("zzz_no_such_term", { db: dbPath, json: true }, (s) => lines.push(s));
+    expect(() => JSON.parse(lines[0])).not.toThrow();
+    expect(lines.join("\n")).not.toMatch(/agentgrep index/);
+  });
 });
 
 describe("runSessions", () => {
@@ -203,6 +224,22 @@ describe("runStats", () => {
     const parsed = JSON.parse(lines[0]);
     expect(parsed.totalSessions).toBe(1);
     expect(parsed.byProject[0].projectDir).toBe("/home/dev/myapp");
+  });
+
+  it("labels cost figures as est. API cost in text mode (list price, not real spend)", () => {
+    const lines: string[] = [];
+    runStats({ db: dbPath, json: false }, (s) => lines.push(s));
+    expect(lines[0]).toMatch(/est\. API cost: \$/);
+    expect(lines[1]).toMatch(/estApiCost=\$/);
+    expect(lines.join("\n")).not.toMatch(/\bcost=\$/);
+  });
+});
+
+describe("runSessions text mode", () => {
+  it("labels per-session cost as estApiCost", () => {
+    const lines: string[] = [];
+    runSessions({ db: dbPath, json: false }, (s) => lines.push(s));
+    expect(lines[0]).toMatch(/estApiCost=\$/);
   });
 });
 
