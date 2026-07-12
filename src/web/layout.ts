@@ -347,7 +347,7 @@ export function renderLayout(opts: LayoutOptions): string {
 </head>
 <body>
 <header class="site">
-  <span class="brand">agent<span class="brand-accent">grep</span></span>
+  <span class="brand">re<span class="brand-accent">wound</span></span>
   <nav class="site-nav">${navHtml}</nav>
 </header>
 <main>${opts.body}</main>

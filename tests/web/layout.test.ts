@@ -61,7 +61,7 @@ describe("renderLayout", () => {
 
   it("renders a distinctive wordmark with 'grep' set apart from 'agent'", () => {
     const html = renderLayout({ title: "Search", body: "" });
-    expect(html).toMatch(/<span class="brand">agent<span class="brand-accent">grep<\/span><\/span>/);
+    expect(html).toMatch(/<span class="brand">re<span class="brand-accent">wound<\/span><\/span>/);
   });
 
   it("ships a self-contained inline SVG favicon with no external request", () => {

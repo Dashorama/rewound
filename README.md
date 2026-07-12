@@ -30,6 +30,19 @@ found and fixed the **fts5** **trigger** bug by rewriting the AFTER UPDATE **tri
 
 Those numbers are real, from indexing a working machine's actual Claude Code history: 3,310 session files / 2+ GB / 368,687 messages, cold-indexed in 30 seconds (target was 5 minutes), incremental re-index in 148ms (target 5s), search in single-digit milliseconds (target 100ms).
 
+![Search results — grouped per session, prose ranked above tool output](docs/media/search.png)
+
+Your own words rank above tool output that merely mentions the term, results are grouped one-per-session (`+N more in this session`), and every hit carries a one-tap resume command. More recall stories in [docs/use-cases.md](docs/use-cases.md).
+
+<details>
+<summary>More screenshots: session transcript · stats · phone</summary>
+
+![Session transcript view](docs/media/session.png)
+![Stats — est. API cost per project](docs/media/stats.png)
+![Phone-friendly over your tailnet](docs/media/phone.png)
+
+</details>
+
 ## Install
 
 ```bash
