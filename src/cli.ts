@@ -16,7 +16,7 @@ import {
 } from "./db.js";
 import { ClaudeCodeAdapter } from "./adapters/claude-code.js";
 import { indexAll } from "./indexer.js";
-import { search, type SearchOptions } from "./search.js";
+import { search, collapseSnippetWhitespace, type SearchOptions } from "./search.js";
 import { startMcpServer } from "./mcp.js";
 import { buildServer } from "./server.js";
 
@@ -91,7 +91,11 @@ export function runSearch(query: string, opts: SearchCliOptions, log: Logger = d
 
   for (const hit of hits) {
     log(`${hit.projectDir} · ${hit.title ?? hit.sessionId} · ${hit.ts}`);
-    log(highlightSnippet(hit.snippet));
+    log(highlightSnippet(collapseSnippetWhitespace(hit.snippet)));
+    if (!opts.allMatches && hit.matchesInSession > 1) {
+      const extra = hit.matchesInSession - 1;
+      log(`  (+${extra} more ${extra === 1 ? "match" : "matches"} in this session)`);
+    }
     log(`  ↳ resume: claude --resume ${hit.sessionId}`);
     log("");
   }
@@ -245,6 +249,7 @@ export function buildProgram(): Command {
     .option("--since <iso-or-relative>", "ISO timestamp or relative like 7d / 24h")
     .option("--role <role>", "filter by role: user or assistant")
     .option("--sidechains", "include sidechain (subagent) messages")
+    .option("--all-matches", "show every matching message, not one best hit per session")
     .option("--limit <n>", "max results", parsePositiveInt)
     .option("--raw", "treat query as raw FTS5 match syntax")
     .option("--db <path>", "database path")

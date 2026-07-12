@@ -26,6 +26,7 @@ const sampleHit = {
   snippet: "hit",
   isSidechain: false,
   estCostUsd: 0.01,
+  matchesInSession: 1,
 };
 
 describe("renderSearchPage", () => {
@@ -178,5 +179,34 @@ describe("renderSearchPage", () => {
     const link = html.match(/<a rel="next"[^>]*>/)?.[0] ?? "";
     expect(link).toContain("&amp;");
     expect(link).not.toMatch(/href="[^"]*[^&]&[^a][^"]*"/);
+  });
+});
+
+describe("grouped hits and snippet cleanup", () => {
+  it("shows a muted 'more in this session' count when a session has extra matches", () => {
+    const html = renderSearchPage(
+      baseOpts({ q: "webhook", hits: [{ ...sampleHit, matchesInSession: 3 }] })
+    );
+    expect(html).toMatch(/\+2 more in this session/);
+  });
+
+  it("shows no extra-matches count for a single-match session", () => {
+    const html = renderSearchPage(baseOpts({ q: "webhook", hits: [sampleHit] }));
+    expect(html).not.toMatch(/more in this session/);
+  });
+
+  it("collapses snippet whitespace so code dumps render on one visual run", () => {
+    const html = renderSearchPage(
+      baseOpts({ q: "x", hits: [{ ...sampleHit, snippet: "line one\n\n  line\ttwo" }] })
+    );
+    expect(html).toContain("line one line two");
+  });
+
+  it("offers an all-matches toggle link when grouped, and a grouped link when showing all", () => {
+    const grouped = renderSearchPage(baseOpts({ q: "webhook", hits: [sampleHit] }));
+    expect(grouped).toMatch(/href="\/\?[^"]*all=1[^"]*"[^>]*>[^<]*all matches/i);
+
+    const all = renderSearchPage(baseOpts({ q: "webhook", hits: [sampleHit], allMatches: true }));
+    expect(all).toMatch(/best hit per session/i);
   });
 });

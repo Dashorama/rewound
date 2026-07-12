@@ -1,4 +1,5 @@
 import { escapeHtml, highlightSnippetHtml } from "../html.js";
+import { collapseSnippetWhitespace } from "../../search.js";
 
 export interface SearchPageHit {
   sessionId: string;
@@ -10,6 +11,7 @@ export interface SearchPageHit {
   snippet: string;
   isSidechain: boolean;
   estCostUsd: number;
+  matchesInSession: number;
 }
 
 export interface SearchPageOptions {
@@ -18,6 +20,7 @@ export interface SearchPageOptions {
   since: string;
   role: string;
   sidechains: boolean;
+  allMatches?: boolean;
   hits: SearchPageHit[];
   projects: string[];
   page: number;
@@ -33,6 +36,7 @@ function pageQueryString(opts: SearchPageOptions, page: number): string {
   if (opts.since) params.set("since", opts.since);
   if (opts.role) params.set("role", opts.role);
   if (opts.sidechains) params.set("sidechains", "1");
+  if (opts.allMatches) params.set("all", "1");
   if (page > 1) params.set("page", String(page));
   // URLSearchParams percent-encodes every value, so the only raw character
   // left over is the "&" joining params — escape it for valid HTML markup.
@@ -96,7 +100,8 @@ function renderHitCard(hit: SearchPageHit, index: number): string {
     ${sidechainBadge}
   </div>
   <h3 class="hit-title"><a class="tap-target" href="/session/${encodeURIComponent(hit.sessionId)}">${heading}</a></h3>
-  <p class="snippet">${highlightSnippetHtml(hit.snippet)}</p>
+  <p class="snippet">${highlightSnippetHtml(collapseSnippetWhitespace(hit.snippet))}</p>
+  ${hit.matchesInSession > 1 ? `<p class="muted">+${hit.matchesInSession - 1} more in this session</p>` : ""}
   <div class="hit-footer">
     <span class="cost muted" title="Estimated cost at API list prices">$${hit.estCostUsd.toFixed(4)}</span>
     <code id="${resumeId}">${escapeHtml(resumeCmd)}</code>
@@ -129,5 +134,14 @@ export function renderSearchPage(opts: SearchPageOptions): string {
   }
 
   const cards = opts.hits.map(renderHitCard).join("");
-  return `${filters}${cards}${renderPagination(opts)}`;
+  return `${filters}${renderGroupToggle(opts)}${cards}${renderPagination(opts)}`;
+}
+
+function renderGroupToggle(opts: SearchPageOptions): string {
+  if (opts.allMatches) {
+    const qs = pageQueryString({ ...opts, allMatches: false }, 1);
+    return `<p class="muted group-toggle">showing all matches · <a href="/${qs}">one best hit per session</a></p>`;
+  }
+  const qs = pageQueryString({ ...opts, allMatches: true }, 1);
+  return `<p class="muted group-toggle">one best hit per session · <a href="/${qs}">show all matches</a></p>`;
 }

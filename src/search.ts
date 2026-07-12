@@ -6,6 +6,7 @@ export interface SearchOptions {
   since?: string; // ISO timestamp, or relative shorthand like "7d" / "24h"
   role?: "user" | "assistant";
   sidechains?: boolean;
+  allMatches?: boolean; // default groups to one best hit per session
   limit?: number;
   offset?: number;
   raw?: boolean;
@@ -23,6 +24,14 @@ export interface SearchHit {
   model?: string;
   isSidechain: boolean;
   estCostUsd: number;
+  matchesInSession: number;
+}
+
+// Snippets lifted from code/tool dumps carry embedded newlines, tabs and
+// indentation that wreck scannability in a result list. Collapse for display
+// only — stored text and raw snippet data are untouched.
+export function collapseSnippetWhitespace(snippet: string): string {
+  return snippet.replace(/\s+/g, " ").trim();
 }
 
 const RELATIVE_SINCE_RE = /^(\d+)([hd])$/;
@@ -53,6 +62,7 @@ export function search(db: Database.Database, query: string, opts: SearchOptions
     since: resolveSince(opts.since),
     role: opts.role,
     sidechains: opts.sidechains,
+    allMatches: opts.allMatches,
     limit: opts.limit,
     offset: opts.offset,
   };
@@ -77,5 +87,6 @@ export function search(db: Database.Database, query: string, opts: SearchOptions
     model: r.model,
     isSidechain: r.isSidechain,
     estCostUsd: r.estCostUsd,
+    matchesInSession: r.matchesInSession,
   }));
 }

@@ -41,9 +41,19 @@ function extractBlockText(block: unknown): string {
   return "";
 }
 
-function extractUserText(content: unknown): string {
-  if (typeof content === "string") return content;
-  return extractBlockText(content);
+function extractUserContent(content: unknown): { text: string; toolText: string } {
+  if (typeof content === "string") return { text: content, toolText: "" };
+  if (!Array.isArray(content)) return { text: extractBlockText(content), toolText: "" };
+  const prose: string[] = [];
+  const tool: string[] = [];
+  for (const block of content) {
+    const isToolResult =
+      block != null && typeof block === "object" && (block as Record<string, unknown>).type === "tool_result";
+    const t = extractBlockText(block);
+    if (!t) continue;
+    (isToolResult ? tool : prose).push(t);
+  }
+  return { text: prose.join("\n\n"), toolText: tool.join("\n\n") };
 }
 
 function extractAssistantContent(content: unknown): { text: string; tools: string[] } {
@@ -143,9 +153,10 @@ export class ClaudeCodeAdapter implements SourceAdapter {
       if (record.type === "user" || record.type === "assistant") {
         const msg = record.message;
         const isAssistant = record.type === "assistant";
+        const userContent = isAssistant ? undefined : extractUserContent(msg?.content);
         const { text: msgText, tools } = isAssistant
           ? extractAssistantContent(msg?.content)
-          : { text: extractUserText(msg?.content), tools: [] as string[] };
+          : { text: userContent!.text, tools: [] as string[] };
 
         const usage =
           isAssistant && msg?.usage
@@ -162,6 +173,7 @@ export class ClaudeCodeAdapter implements SourceAdapter {
           role: record.type,
           ts: record.timestamp ?? "",
           text: msgText,
+          toolText: userContent?.toolText || undefined,
           tools,
           model: isAssistant ? msg?.model : undefined,
           isSidechain: Boolean(record.isSidechain),

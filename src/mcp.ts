@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { search } from "./search.js";
+import { search, collapseSnippetWhitespace } from "./search.js";
 import { getSessionByIdOrPrefix, getMessagesForSession, parseJsonStringArray, hasAnyMessages } from "./db.js";
 
 const MAX_RESPONSE_BYTES = 8192;
@@ -96,10 +96,19 @@ export function createMcpServer(db: Database.Database): McpServer {
         project: z.string().optional().describe("Filter to sessions whose project directory contains this substring"),
         since: z.string().optional().describe("ISO timestamp or relative shorthand like '7d' / '24h'"),
         limit: z.number().int().positive().max(MAX_SEARCH_LIMIT).optional().describe(`Max hits (default ${DEFAULT_SEARCH_LIMIT})`),
+        all_matches: z
+          .boolean()
+          .optional()
+          .describe("Return every matching message instead of one best hit per session"),
       },
     },
-    async ({ query, project, since, limit }) => {
-      const hits = search(db, query, { project, since, limit: limit ?? DEFAULT_SEARCH_LIMIT });
+    async ({ query, project, since, limit, all_matches }) => {
+      const hits = search(db, query, {
+        project,
+        since,
+        allMatches: all_matches,
+        limit: limit ?? DEFAULT_SEARCH_LIMIT,
+      });
       if (hits.length === 0) {
         if (!hasAnyMessages(db)) {
           return textResult(
@@ -112,8 +121,9 @@ export function createMcpServer(db: Database.Database): McpServer {
       const blocks = hits.map((h) =>
         [
           `session: ${h.sessionId}${h.title ? ` (${h.title})` : ""}`,
-          `project: ${h.projectDir}  date: ${h.ts}  match_uuid: ${h.uuid}`,
-          centeredExcerpt(h.text, query, EXCERPT_CHARS),
+          `project: ${h.projectDir}  date: ${h.ts}  match_uuid: ${h.uuid}` +
+            (h.matchesInSession > 1 ? `  matches_in_session: ${h.matchesInSession}` : ""),
+          collapseSnippetWhitespace(centeredExcerpt(h.text, query, EXCERPT_CHARS)),
         ].join("\n")
       );
       const body = joinWithinBudget(blocks, "\n\n---\n\n", MAX_RESPONSE_BYTES - 200);
