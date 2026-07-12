@@ -100,12 +100,14 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
     const since = firstQueryValue(query.since) || undefined;
     const role = parseRole(firstQueryValue(query.role));
     const sidechains = firstQueryValue(query.sidechains) === "1";
+    const allMatches = firstQueryValue(query.all) === "1";
 
     const searchOpts: SearchOptions = {
       project,
       since,
       role,
       sidechains,
+      allMatches,
       limit: PAGE_SIZE + 1,
       offset: (page - 1) * PAGE_SIZE,
     };
@@ -121,6 +123,7 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
       since: since ?? "",
       role: role ?? "",
       sidechains,
+      allMatches,
       hits: pageHits,
       projects,
       page,

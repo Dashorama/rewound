@@ -27,6 +27,13 @@ export interface SearchHit {
   matchesInSession: number;
 }
 
+// Snippets lifted from code/tool dumps carry embedded newlines, tabs and
+// indentation that wreck scannability in a result list. Collapse for display
+// only — stored text and raw snippet data are untouched.
+export function collapseSnippetWhitespace(snippet: string): string {
+  return snippet.replace(/\s+/g, " ").trim();
+}
+
 const RELATIVE_SINCE_RE = /^(\d+)([hd])$/;
 
 export function resolveSince(since: string | undefined, now: Date = new Date()): string | undefined {

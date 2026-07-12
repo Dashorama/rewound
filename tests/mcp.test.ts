@@ -536,3 +536,30 @@ describe("get_session_excerpt", () => {
     expect(out).toContain("HUGE_MARKER");
   });
 });
+
+describe("search_history grouped hits", () => {
+  it("reports how many matches a session had so the agent can drill in instead of re-searching", async () => {
+    const result = await client.callTool({ name: "search_history", arguments: { query: "fts5 trigger" } });
+    const out = text(result);
+    expect(out).toMatch(/matches_in_session: \d+/);
+  });
+
+  it("omits the matches_in_session line for single-match sessions (no noise)", async () => {
+    const result = await client.callTool({ name: "search_history", arguments: { query: "rewriting" } });
+    const out = text(result);
+    expect(out).toContain("session: sess-a");
+    expect(out).not.toContain("matches_in_session");
+  });
+
+  it("returns per-message hits when all_matches is set", async () => {
+    const grouped = await client.callTool({ name: "search_history", arguments: { query: "fts5 trigger" } });
+    const all = await client.callTool({
+      name: "search_history",
+      arguments: { query: "fts5 trigger", all_matches: true },
+    });
+    const groupedBlocks = (text(grouped).match(/session: sess-a/g) ?? []).length;
+    const allBlocks = (text(all).match(/session: sess-a/g) ?? []).length;
+    expect(groupedBlocks).toBe(1);
+    expect(allBlocks).toBeGreaterThan(1);
+  });
+});

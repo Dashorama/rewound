@@ -353,3 +353,63 @@ describe("runServe", () => {
     expect(resolveServePort(0)).toBe(0);
   });
 });
+
+describe("search output ergonomics (grouped hits, snippet cleanup)", () => {
+  it("groups same-session hits into one row with a +N more count", () => {
+    const lines: string[] = [];
+    runSearch("fts5 trigger", { db: dbPath }, (l) => lines.push(l));
+    const out = lines.join("\n");
+    // u1 and a1 both match; default output is one row for the session
+    expect(out).toContain("(+1 more match in this session)");
+    expect(out).toMatch(/\(1 hit in \d+ms\)/);
+  });
+
+  it("returns every matching message with allMatches", () => {
+    const lines: string[] = [];
+    runSearch("fts5 trigger", { db: dbPath, allMatches: true }, (l) => lines.push(l));
+    const out = lines.join("\n");
+    expect(out).toMatch(/\(2 hits in \d+ms\)/);
+    expect(out).not.toContain("more match in this session");
+  });
+
+  it("renders a snippet spanning multiple source lines as a single output line", () => {
+    const filePath = path.join(projectDir, "sess-cli-multiline.jsonl");
+    fs.writeFileSync(
+      filePath,
+      line({
+        type: "user",
+        uuid: "m1",
+        timestamp: "2026-07-02T10:00:00.000Z",
+        cwd: "/home/dev/myapp",
+        isSidechain: false,
+        sessionId: "sess-cli-multiline",
+        message: {
+          role: "user",
+          content: "alpha beta\ngamma webhookretry delta\nepsilon zeta",
+        },
+      }) + "\n"
+    );
+    runIndex({ roots: [tmpDir], db: dbPath, json: true }, () => {});
+
+    const lines: string[] = [];
+    runSearch("webhookretry", { db: dbPath }, (l) => lines.push(l));
+    expect(lines.some((l) => l.includes("\n"))).toBe(false);
+    const snippetLine = lines.find((l) => l.includes("webhookretry"))!;
+    expect(snippetLine).toContain("gamma");
+    expect(snippetLine).toContain("delta");
+  });
+
+  it("exposes matchesInSession in JSON hits", () => {
+    const lines: string[] = [];
+    runSearch("fts5 trigger", { db: dbPath, json: true }, (l) => lines.push(l));
+    const payload = JSON.parse(lines[0]);
+    expect(payload.hits.length).toBe(1);
+    expect(payload.hits[0].matchesInSession).toBe(2);
+  });
+
+  it("wires --all-matches through the CLI program definition", () => {
+    const program = buildProgram();
+    const searchCmd = program.commands.find((c) => c.name() === "search")!;
+    expect(searchCmd.options.some((o) => o.long === "--all-matches")).toBe(true);
+  });
+});
