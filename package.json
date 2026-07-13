@@ -1,6 +1,6 @@
 {
   "name": "rewound",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Grep for everything your AI coding agents ever did. Local SQLite/FTS5 search over Claude Code session transcripts: CLI, MCP server, and web UI.",
   "license": "SEE LICENSE IN LICENSE",
   "author": "David Erner",
