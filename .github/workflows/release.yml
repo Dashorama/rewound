@@ -1,0 +1,47 @@
+# Release via npm Trusted Publishing (GitHub Actions OIDC).
+#
+# Flow: push a v* tag → `verify` runs the full suite → `publish` waits for the
+# required reviewer on the `release` environment (approve from the GitHub app
+# on a phone) → npm publish with OIDC + provenance. No npm tokens exist
+# anywhere: the registry trusts this workflow file in this repo directly.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+      - name: tag must match package.json version
+        run: |
+          PKG="v$(node -p "require('./package.json').version")"
+          if [ "$PKG" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME != package.json $PKG" >&2
+            exit 1
+          fi
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release # protected: required reviewer approves each release
+    permissions:
+      id-token: write # OIDC exchange with the npm registry
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: npm 11.5.1+ required for trusted publishing
+        run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm publish # OIDC: no token; provenance attached automatically
