@@ -1,5 +1,5 @@
 import { escapeHtml, highlightSnippetHtml } from "../html.js";
-import { collapseSnippetWhitespace } from "../../search.js";
+import { collapseSnippetWhitespace, resumeCommand } from "../../search.js";
 
 export interface SearchPageHit {
   sessionId: string;
@@ -12,6 +12,7 @@ export interface SearchPageHit {
   isSidechain: boolean;
   estCostUsd: number;
   matchesInSession: number;
+  source?: string;
 }
 
 export interface SearchPageOptions {
@@ -88,7 +89,7 @@ function renderHero(opts: SearchPageOptions): string {
 function renderHitCard(hit: SearchPageHit, index: number): string {
   const heading = escapeHtml(hit.title ?? hit.sessionId);
   const sidechainBadge = hit.isSidechain ? `<span class="badge accent">subagent</span>` : "";
-  const resumeCmd = `claude --resume ${hit.sessionId}`;
+  const resumeCmd = resumeCommand(hit.source, hit.sessionId);
   const resumeId = `resume-hit-${index}`;
 
   return `

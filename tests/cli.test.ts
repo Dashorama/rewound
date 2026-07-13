@@ -497,3 +497,35 @@ describe("sync dir persistence (bare `rewound sync` remembers the folder)", () =
     expect(syncCmd.usage()).not.toMatch(/<dir>/); // optional now: [dir]
   });
 });
+
+describe("codex source: indexing + resume hint", () => {
+  it("indexes codex rollouts alongside claude sessions; codex hits get `codex resume`", () => {
+    const codexRoot = path.join(tmpDir, "codex-sessions");
+    const rollout = path.join(codexRoot, "2026", "06", "01", "rollout-2026-06-01T10-00-00-0198c0ee-aaaa-bbbb-cccc-1234567890ab.jsonl");
+    fs.mkdirSync(path.dirname(rollout), { recursive: true });
+    fs.writeFileSync(
+      rollout,
+      [
+        line({ timestamp: "2026-06-01T10:00:00.000Z", type: "session_meta", payload: { id: "x", cwd: "/home/dev/api-server" } }),
+        line({ timestamp: "2026-06-01T10:00:02.000Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "the zanzibar gateway timeout mystery" }] } }),
+      ].join("\n") + "\n"
+    );
+
+    const out: string[] = [];
+    runIndex({ roots: [tmpDir], codexRoots: [codexRoot], db: dbPath, json: true }, (l) => out.push(l));
+    const stats = JSON.parse(out[0]);
+    expect(stats.filesScanned).toBeGreaterThanOrEqual(2); // claude fixture + rollout
+
+    const hits: string[] = [];
+    runSearch("zanzibar gateway", { db: dbPath }, (l) => hits.push(l));
+    const text = hits.join("\n");
+    expect(text).toContain("codex resume 0198c0ee-aaaa-bbbb-cccc-1234567890ab");
+    expect(text).not.toContain("claude --resume 0198c0ee");
+  });
+
+  it("keeps `claude --resume` for claude-code hits", () => {
+    const hits: string[] = [];
+    runSearch("fts5 trigger", { db: dbPath }, (l) => hits.push(l));
+    expect(hits.join("\n")).toContain("claude --resume sess-cli-1");
+  });
+});

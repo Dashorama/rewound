@@ -373,6 +373,7 @@ export interface RawSearchHit {
   title?: string;
   estCostUsd: number;
   matchesInSession: number;
+  source: string;
 }
 
 export function searchMessagesRaw(
@@ -418,7 +419,7 @@ export function searchMessagesRaw(
       FROM (
         SELECT m.session_id as sessionId, m.uuid as uuid, m.role as role, m.ts as ts,
                m.text as text, m.model as model, m.is_sidechain as isSidechain,
-               s.project_dir as projectDir, s.title as title, s.est_cost_usd as estCostUsd,
+               s.project_dir as projectDir, s.title as title, s.est_cost_usd as estCostUsd, s.source as source,
                snippet(messages_fts, -1, '', '', '...', 12) as snippet,
                bm25(messages_fts, ${PROSE_BM25_WEIGHT}, ${TOOL_BM25_WEIGHT}) as rank
         FROM messages_fts
@@ -446,6 +447,7 @@ export function searchMessagesRaw(
     title: r.title ?? undefined,
     estCostUsd: r.estCostUsd,
     matchesInSession: r.matchesInSession,
+    source: r.source,
   }));
 }
 

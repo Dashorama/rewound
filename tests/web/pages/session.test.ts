@@ -137,3 +137,11 @@ describe("renderSessionPage", () => {
     expect(html).toMatch(/page 2 of 5/i);
   });
 });
+
+describe("source-aware resume", () => {
+  it("renders the codex resume command for codex sessions", () => {
+    const html = renderSessionPage(baseSession({ source: "codex" } as any), [plainMessage]);
+    expect(html).toContain("codex resume sess-1");
+    expect(html).not.toContain("claude --resume sess-1");
+  });
+});

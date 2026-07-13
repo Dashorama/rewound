@@ -25,6 +25,13 @@ export interface SearchHit {
   isSidechain: boolean;
   estCostUsd: number;
   matchesInSession: number;
+  source: string;
+}
+
+// Every source harness has its own resume incantation; hits know their source.
+export function resumeCommand(source: string | undefined, sessionId: string): string {
+  if (source === "codex") return `codex resume ${sessionId}`;
+  return `claude --resume ${sessionId}`;
 }
 
 // Snippets lifted from code/tool dumps carry embedded newlines, tabs and
@@ -88,5 +95,6 @@ export function search(db: Database.Database, query: string, opts: SearchOptions
     isSidechain: r.isSidechain,
     estCostUsd: r.estCostUsd,
     matchesInSession: r.matchesInSession,
+    source: r.source,
   }));
 }

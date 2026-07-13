@@ -15,8 +15,9 @@ import {
   parseJsonStringArray,
 } from "./db.js";
 import { ClaudeCodeAdapter } from "./adapters/claude-code.js";
+import { CodexAdapter } from "./adapters/codex.js";
 import { indexAll } from "./indexer.js";
-import { search, collapseSnippetWhitespace, type SearchOptions } from "./search.js";
+import { search, collapseSnippetWhitespace, resumeCommand, type SearchOptions } from "./search.js";
 import { mergeDb, syncDir, sanitizeHostName } from "./sync.js";
 import { loadConfig, saveConfig } from "./config.js";
 import {
@@ -31,6 +32,7 @@ import { startMcpServer } from "./mcp.js";
 import { buildServer } from "./server.js";
 
 const DEFAULT_ROOTS = [path.join(os.homedir(), ".claude", "projects")];
+const DEFAULT_CODEX_ROOTS = [path.join(os.homedir(), ".codex", "sessions")];
 
 type Logger = (line: string) => void;
 const defaultLog: Logger = (line) => console.log(line);
@@ -53,16 +55,26 @@ export function parsePositiveInt(value: string): number {
 
 export interface IndexCliOptions {
   roots?: string[];
+  codexRoots?: string[];
   db?: string;
   json?: boolean;
 }
 
 export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void {
   const db = openDb(resolveDbPath(opts.db));
-  const adapter = new ClaudeCodeAdapter();
-  const roots = opts.roots && opts.roots.length > 0 ? opts.roots : DEFAULT_ROOTS;
-  const stats = indexAll(db, adapter, roots);
+  const claudeRoots = opts.roots && opts.roots.length > 0 ? opts.roots : DEFAULT_ROOTS;
+  const codexRoots = opts.codexRoots && opts.codexRoots.length > 0 ? opts.codexRoots : DEFAULT_CODEX_ROOTS;
+  const a = indexAll(db, new ClaudeCodeAdapter(), claudeRoots);
+  const b = indexAll(db, new CodexAdapter(), codexRoots);
   db.close();
+  const stats = {
+    filesScanned: a.filesScanned + b.filesScanned,
+    filesNew: a.filesNew + b.filesNew,
+    filesUpdated: a.filesUpdated + b.filesUpdated,
+    messagesIndexed: a.messagesIndexed + b.messagesIndexed,
+    parseErrors: a.parseErrors + b.parseErrors,
+    elapsedMs: a.elapsedMs + b.elapsedMs,
+  };
 
   if (opts.json) {
     log(JSON.stringify(stats));
@@ -106,7 +118,7 @@ export function runSearch(query: string, opts: SearchCliOptions, log: Logger = d
       const extra = hit.matchesInSession - 1;
       log(`  (+${extra} more ${extra === 1 ? "match" : "matches"} in this session)`);
     }
-    log(`  ↳ resume: claude --resume ${hit.sessionId}`);
+    log(`  ↳ resume: ${resumeCommand(hit.source, hit.sessionId)}`);
     log("");
   }
   if (newestTs) {
@@ -342,7 +354,8 @@ export function buildProgram(): Command {
 
   program
     .command("index")
-    .option("--roots <dirs...>", "root directories to scan")
+    .option("--roots <dirs...>", "Claude Code root directories to scan")
+    .option("--codex-roots <dirs...>", "Codex CLI session roots (default: ~/.codex/sessions)")
     .option("--db <path>", "database path")
     .option("--json", "output JSON")
     .action((opts) => runIndex(opts));

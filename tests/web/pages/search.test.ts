@@ -210,3 +210,13 @@ describe("grouped hits and snippet cleanup", () => {
     expect(all).toMatch(/best hit per session/i);
   });
 });
+
+describe("source-aware resume command", () => {
+  it("renders codex resume for codex hits", () => {
+    const html = renderSearchPage(
+      baseOpts({ q: "x", hits: [{ ...sampleHit, source: "codex", sessionId: "abc-123" }] })
+    );
+    expect(html).toContain("codex resume abc-123");
+    expect(html).not.toContain("claude --resume abc-123");
+  });
+});

@@ -6,11 +6,11 @@ Grep for everything your AI coding agents ever did.
 
 Heavy users of coding agents accumulate gigabytes of session transcripts that are effectively write-only memory:
 
-- **No search.** Claude Code has no cross-session full-text search. Finding "the session where we fixed the auth bug" means manual archaeology through JSONL files.
+- **No search.** Claude Code and Codex CLI have no cross-session full-text search. Finding "the session where we fixed the auth bug" means manual archaeology through JSONL files.
 - **History is perishable.** Claude Code deletes transcripts older than 30 days by default (`cleanupPeriodDays`, swept at startup) — your reasoning history evaporates.
 - **Agents can't remember.** Every new session rediscovers what a previous session already solved. Nobody serves the agent itself.
 
-rewound indexes every session transcript on your machine into a local SQLite/FTS5 database and exposes it three ways: a CLI, an MCP server your agents can query directly, and a phone-friendly local web UI. Everything runs on your machine. Nothing leaves it.
+rewound indexes every session transcript on your machine — Claude Code and OpenAI Codex CLI today, more harnesses next — into a local SQLite/FTS5 database and exposes it three ways: a CLI, an MCP server your agents can query directly, and a phone-friendly local web UI. Everything runs on your machine. Nothing leaves it.
 
 ## 60-second demo
 
@@ -66,7 +66,7 @@ node dist/cli.js index          # or: npm link, then `rewound index`
 
 </details>
 
-By default rewound reads `~/.claude/projects/**/*.jsonl` (read-only — it never modifies your transcripts) and writes its own database to `~/.rewound/rewound.db`. Override the DB path with `--db <path>` or `REWOUND_DB=<path>`.
+By default rewound reads `~/.claude/projects/**/*.jsonl` and Codex CLI sessions from `~/.codex/sessions` (read-only — it never modifies your transcripts) and writes its own database to `~/.rewound/rewound.db`. Override the DB path with `--db <path>` or `REWOUND_DB=<path>`.
 
 ### Multi-machine: your history follows you
 
@@ -107,13 +107,7 @@ the transport, and your data only ever lands on storage you control.
 
 ### Your history outlives Claude Code's cleanup
 
-Claude Code deletes transcripts older than ~30 days at startup. rewound's index is permanent: once a session is indexed, it stays searchable even after the source file is gone (it's kept as an *archived* session). Anything from before you started indexing is already unrecoverable — so the best moment to run `rewound index` is now, and then regularly. A cron line makes it automatic:
-
-```
-@hourly rewound index
-```
-
-Incremental runs take well under a second when little has changed.
+Claude Code deletes transcripts older than ~30 days at startup. rewound's index is permanent: once a session is indexed, it stays searchable even after the source file is gone (it's kept as an *archived* session). Anything from before you started indexing is already unrecoverable — so the best moment to run `rewound index` is now, and then let `rewound auto --install` keep it fresh hourly. Incremental runs take well under a second when little has changed.
 
 ## The surfaces
 
@@ -170,7 +164,7 @@ Server-rendered with zero frontend build step, colorblind-safe palette (blue/ora
 
 ## Roadmap
 
-Keyword-first search is deliberate for v0.x — it's fast, local, and predictable. Local hybrid/semantic search (vector index built with a local embedding model, no API keys, fused with FTS ranking) is planned once the keyword surface has proven itself; the gap it closes is vocabulary mismatch ("that time the port was already taken" vs `EADDRINUSE`).
+More harness adapters are next: Copilot CLI and OpenCode transcripts are already mapped (see repo issues/roadmap). Keyword-first search is deliberate for v0.x — it's fast, local, and predictable. Local hybrid/semantic search (vector index built with a local embedding model, no API keys, fused with FTS ranking) is planned once the keyword surface has proven itself; the gap it closes is vocabulary mismatch ("that time the port was already taken" vs `EADDRINUSE`).
 
 ## License & pricing
 

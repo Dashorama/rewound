@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import type { NormalizedMessage, NormalizedSession, SourceAdapter } from "../types.js";
+import { consumeCompleteLines, walkJsonlFiles } from "./jsonl.js";
 
 interface RawUsage {
   input_tokens?: number;
@@ -80,48 +80,20 @@ function decodeProjectDir(filePath: string): string {
   return dirName.replace(/-/g, "/");
 }
 
-function walk(dir: string, found: string[]): void {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      walk(full, found);
-    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-      found.push(full);
-    }
-  }
-}
-
 export class ClaudeCodeAdapter implements SourceAdapter {
   id = "claude-code";
 
   discover(roots: string[]): string[] {
     const found: string[] = [];
-    for (const root of roots) walk(root, found);
-    return found;
+    for (const root of roots) walkJsonlFiles(root, found);
+    // rollout-*.jsonl are Codex CLI files (CodexAdapter's territory) — keep the
+    // two adapters disjoint even when a user points --roots at a mixed tree.
+    return found.filter((f) => !/^rollout-.*\.jsonl$/.test(path.basename(f)));
   }
 
   parse(filePath: string, fromByte = 0): NormalizedSession {
     const id = path.basename(filePath, ".jsonl");
-    const buf = fs.readFileSync(filePath);
-    const slice = buf.subarray(fromByte);
-
-    // Only ever consume complete, newline-terminated lines. If the file is
-    // mid-write (the writer appended a record's bytes but hasn't flushed its
-    // trailing "\n" yet), the last fragment in `slice` is torn — leave it
-    // unconsumed and unparsed so the next incremental call re-reads it whole,
-    // rather than either erroring on it or silently skipping past it.
-    const lastNewline = slice.lastIndexOf(0x0a); // "\n"
-    const consumedSlice = lastNewline === -1 ? slice.subarray(0, 0) : slice.subarray(0, lastNewline + 1);
-    const bytesConsumed = fromByte + consumedSlice.length;
-
-    const text = consumedSlice.length > 0 ? consumedSlice.toString("utf8") : "";
-    const lines = text.length > 0 ? text.split("\n") : [];
+    const { lines, bytesConsumed } = consumeCompleteLines(filePath, fromByte);
 
     const messages: NormalizedMessage[] = [];
     let title: string | undefined;

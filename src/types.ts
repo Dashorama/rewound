@@ -14,7 +14,7 @@ export interface NormalizedMessage {
 
 export interface NormalizedSession {
   id: string; // sessionId (filename stem)
-  source: "claude-code"; // adapter id; more later
+  source: string; // adapter id, e.g. "claude-code" | "codex"
   projectDir: string; // decoded, e.g. /home/dev/myapp
   // How projectDir was derived. "cwd" = from a message's cwd field (authoritative);
   // "fallback" = naive dash→slash decode of the transcript dir name, which is ambiguous

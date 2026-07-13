@@ -1,7 +1,9 @@
 import { escapeHtml } from "../html.js";
+import { resumeCommand } from "../../search.js";
 
 export interface SessionPageSession {
   id: string;
+  source?: string;
   projectDir: string;
   gitBranch?: string;
   title?: string;
@@ -66,7 +68,7 @@ export function renderSessionPage(
   const archivedBadge = session.archived
     ? `<span class="badge accent">archived</span>`
     : "";
-  const resumeCmd = `claude --resume ${session.id}`;
+  const resumeCmd = resumeCommand(session.source, session.id);
 
   const header = `
 <header class="session-header">
