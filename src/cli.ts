@@ -18,6 +18,15 @@ import { ClaudeCodeAdapter } from "./adapters/claude-code.js";
 import { indexAll } from "./indexer.js";
 import { search, collapseSnippetWhitespace, type SearchOptions } from "./search.js";
 import { mergeDb, syncDir, sanitizeHostName } from "./sync.js";
+import { loadConfig, saveConfig } from "./config.js";
+import {
+  buildAutoLine,
+  upsertAutoLines,
+  removeAutoLines,
+  listAutoLines,
+  readCrontab,
+  writeCrontab,
+} from "./auto.js";
 import { startMcpServer } from "./mcp.js";
 import { buildServer } from "./server.js";
 
@@ -128,9 +137,21 @@ export interface SyncCliOptions {
   host?: string;
 }
 
-export function runSync(dir: string, opts: SyncCliOptions, log: Logger = defaultLog): void {
-  const db = openDb(resolveDbPath(opts.db));
-  const stats = syncDir(db, dir, opts.host);
+export function runSync(dir: string | undefined, opts: SyncCliOptions, log: Logger = defaultLog): void {
+  const dbPath = resolveDbPath(opts.db);
+  const cfg = loadConfig(dbPath);
+  const target = dir ?? cfg.syncDir;
+  if (!target) {
+    log("no sync folder configured yet — run `rewound sync <dir>` once with any folder");
+    log("your machines already share (Drive, Dropbox, Syncthing, a git repo...); after");
+    log("that, bare `rewound sync` reuses it everywhere, including cron.");
+    return;
+  }
+  if (dir && path.resolve(dir) !== cfg.syncDir) {
+    saveConfig(dbPath, { ...cfg, syncDir: path.resolve(dir) });
+  }
+  const db = openDb(dbPath);
+  const stats = syncDir(db, path.resolve(target), opts.host);
   db.close();
   if (opts.json) {
     log(JSON.stringify(stats));
@@ -141,6 +162,51 @@ export function runSync(dir: string, opts: SyncCliOptions, log: Logger = default
   log(
     `snapshots merged: ${stats.snapshotsMerged}  sessions added: ${stats.sessionsAdded}  updated: ${stats.sessionsUpdated}`
   );
+}
+
+export interface AutoCliOptions {
+  install?: boolean;
+  remove?: boolean;
+  schedule?: string;
+  db?: string;
+}
+
+export function runAuto(opts: AutoCliOptions, log: Logger = defaultLog): void {
+  const haveSyncDir = Boolean(loadConfig(resolveDbPath(opts.db)).syncDir);
+  const line = buildAutoLine(opts.schedule ?? "@hourly", haveSyncDir);
+  const current = readCrontab();
+
+  if (current === undefined) {
+    log("crontab isn't available on this system — schedule this yourself:");
+    log(`  ${line}`);
+    return;
+  }
+
+  if (opts.install) {
+    if (!writeCrontab(upsertAutoLines(current, line))) {
+      log("failed to write crontab — add manually:");
+      log(`  ${line}`);
+      return;
+    }
+    log(`installed: ${line}`);
+    if (!haveSyncDir) {
+      log("(index only — run `rewound sync <dir>` once, then `rewound auto --install` again to add syncing)");
+    }
+    return;
+  }
+
+  if (opts.remove) {
+    writeCrontab(removeAutoLines(current));
+    log("removed rewound's cron entry");
+    return;
+  }
+
+  const managed = listAutoLines(current);
+  if (managed.length === 0) {
+    log("not scheduled — run `rewound auto --install` to keep the index fresh automatically");
+  } else {
+    for (const l of managed) log(l);
+  }
 }
 
 export interface SessionsCliOptions {
@@ -316,12 +382,23 @@ export function buildProgram(): Command {
     .action((file, opts) => runMerge(file, opts));
 
   program
-    .command("sync <dir>")
-    .description("multi-machine continuity: exchange snapshots via any folder you already sync")
+    .command("sync [dir]")
+    .description(
+      "multi-machine continuity: exchange snapshots via any folder you already sync (dir is remembered after first use)"
+    )
     .option("--host <name>", "snapshot name for this machine (default: hostname)")
     .option("--db <path>", "database path")
     .option("--json", "output JSON")
     .action((dir, opts) => runSync(dir, opts));
+
+  program
+    .command("auto")
+    .description("keep the index (and sync, if configured) fresh automatically via cron")
+    .option("--install", "install the cron entry")
+    .option("--remove", "remove the cron entry")
+    .option("--schedule <cron>", "cron schedule expression", "@hourly")
+    .option("--db <path>", "database path")
+    .action((opts) => runAuto(opts));
 
   program
     .command("stats")

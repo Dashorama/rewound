@@ -70,20 +70,37 @@ By default rewound reads `~/.claude/projects/**/*.jsonl` (read-only — it never
 
 ### Multi-machine: your history follows you
 
-If you work across machines, `rewound sync` gives you one merged history with zero
-servers involved. Point it at any folder that already syncs between your machines:
+If you work across machines, two commands per machine give you one merged history with
+zero servers involved:
 
 ```bash
-rewound sync ~/GoogleDrive/rewound     # or Dropbox, Syncthing, a private git repo,
-                                       # an rclone mount of S3 / Supabase storage...
+rewound sync ~/GoogleDrive/rewound   # once: any folder your machines already share
+rewound auto --install               # keeps index + sync fresh via cron, hourly
 ```
 
-Each machine writes its own snapshot (`<hostname>.rewound.db`) into the folder and
-merges everyone else's — richer copy of a session wins, repeat runs are no-ops. Because
-every host only ever writes its own file, eventually-consistent syncers like Drive and
-Dropbox never see write conflicts. Run it from cron alongside `rewound index` and
-continuity is automatic. `rewound merge <file.db>` is the underlying primitive if you'd
-rather move snapshots by hand (scp, USB stick).
+That's the whole setup. The folder is remembered after the first run — from then on bare
+`rewound sync` (and the cron entry `rewound auto` installs) just works. Any shared folder
+qualifies: Google Drive, Dropbox, Syncthing, a private git repo you pull/push, a mounted
+NAS.
+
+How it works: each machine writes its own snapshot (`<hostname>.rewound.db`) into the
+folder and merges everyone else's — the richer copy of a session wins and repeat runs are
+no-ops. Because every host only ever writes its own file, eventually-consistent syncers
+like Drive and Dropbox never see write conflicts. `rewound merge <file.db>` is the
+underlying primitive if you'd rather move snapshots by hand (scp, USB stick).
+
+**No shared folder? Using object storage (S3, Supabase Storage, R2...)?** The easy road
+is still any file-sync client. If you'd rather use a bucket, wrap the sync in two rclone
+copies (Supabase Storage is S3-compatible — create S3 access keys in project settings →
+Storage, then `rclone config` an S3 remote with your project's storage endpoint):
+
+```bash
+rclone copy bucket:rewound ~/.rewound/sync   # pull other machines' snapshots
+rewound sync ~/.rewound/sync                 # merge + write this machine's snapshot
+rclone copy ~/.rewound/sync bucket:rewound   # push
+```
+
+Put those three lines in cron and it's just as automatic — no mounts needed.
 
 Privacy stance unchanged: rewound itself never opens a network connection — *you* choose
 the transport, and your data only ever lands on storage you control.

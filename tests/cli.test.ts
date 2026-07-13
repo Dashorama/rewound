@@ -469,3 +469,31 @@ describe("runMerge / runSync", () => {
     expect(names).toContain("sync");
   });
 });
+
+describe("sync dir persistence (bare `rewound sync` remembers the folder)", () => {
+  it("persists the dir on first use and reuses it on a bare invocation", () => {
+    const shared = path.join(tmpDir, "shared2");
+    runSync(shared, { db: dbPath, host: "laptop" }, () => {});
+
+    fs.rmSync(path.join(shared, "laptop.rewound.db"));
+    const lines: string[] = [];
+    runSync(undefined, { db: dbPath, host: "laptop" }, (l) => lines.push(l));
+    expect(lines.join("\n")).toMatch(/exported snapshot: laptop\.rewound\.db/);
+    expect(fs.existsSync(path.join(shared, "laptop.rewound.db"))).toBe(true);
+  });
+
+  it("gives a helpful error on a bare invocation with nothing configured", () => {
+    const lines: string[] = [];
+    runSync(undefined, { db: dbPath }, (l) => lines.push(l));
+    const out = lines.join("\n");
+    expect(out).toMatch(/no sync folder configured/i);
+    expect(out).toMatch(/rewound sync <dir>/);
+  });
+
+  it("registers auto and an optional sync dir in the CLI program", () => {
+    const program = buildProgram();
+    expect(program.commands.map((c) => c.name())).toContain("auto");
+    const syncCmd = program.commands.find((c) => c.name() === "sync")!;
+    expect(syncCmd.usage()).not.toMatch(/<dir>/); // optional now: [dir]
+  });
+});
