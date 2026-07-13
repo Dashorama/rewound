@@ -17,6 +17,7 @@ import {
 import { ClaudeCodeAdapter } from "./adapters/claude-code.js";
 import { indexAll } from "./indexer.js";
 import { search, collapseSnippetWhitespace, type SearchOptions } from "./search.js";
+import { mergeDb, syncDir, sanitizeHostName } from "./sync.js";
 import { startMcpServer } from "./mcp.js";
 import { buildServer } from "./server.js";
 
@@ -103,6 +104,43 @@ export function runSearch(query: string, opts: SearchCliOptions, log: Logger = d
     log(`index covers through ${newestTs} — looking for something newer? run \`rewound index\` first`);
   }
   log(`(${hits.length} ${hits.length === 1 ? "hit" : "hits"} in ${elapsedMs}ms)`);
+}
+
+export interface MergeCliOptions {
+  db?: string;
+  json?: boolean;
+}
+
+export function runMerge(otherPath: string, opts: MergeCliOptions, log: Logger = defaultLog): void {
+  const db = openDb(resolveDbPath(opts.db));
+  const stats = mergeDb(db, otherPath);
+  db.close();
+  if (opts.json) {
+    log(JSON.stringify(stats));
+    return;
+  }
+  log(`sessions added: ${stats.sessionsAdded}  updated: ${stats.sessionsUpdated}`);
+}
+
+export interface SyncCliOptions {
+  db?: string;
+  json?: boolean;
+  host?: string;
+}
+
+export function runSync(dir: string, opts: SyncCliOptions, log: Logger = defaultLog): void {
+  const db = openDb(resolveDbPath(opts.db));
+  const stats = syncDir(db, dir, opts.host);
+  db.close();
+  if (opts.json) {
+    log(JSON.stringify(stats));
+    return;
+  }
+  const host = sanitizeHostName(opts.host ?? os.hostname());
+  log(`exported snapshot: ${host}.rewound.db`);
+  log(
+    `snapshots merged: ${stats.snapshotsMerged}  sessions added: ${stats.sessionsAdded}  updated: ${stats.sessionsUpdated}`
+  );
 }
 
 export interface SessionsCliOptions {
@@ -269,6 +307,21 @@ export function buildProgram(): Command {
     .option("--db <path>", "database path")
     .option("--json", "output JSON")
     .action((idOrPrefix, opts) => runShow(idOrPrefix, opts));
+
+  program
+    .command("merge <db-file>")
+    .description("merge another rewound database into this one (union; richer session copy wins)")
+    .option("--db <path>", "database path")
+    .option("--json", "output JSON")
+    .action((file, opts) => runMerge(file, opts));
+
+  program
+    .command("sync <dir>")
+    .description("multi-machine continuity: exchange snapshots via any folder you already sync")
+    .option("--host <name>", "snapshot name for this machine (default: hostname)")
+    .option("--db <path>", "database path")
+    .option("--json", "output JSON")
+    .action((dir, opts) => runSync(dir, opts));
 
   program
     .command("stats")

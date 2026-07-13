@@ -68,6 +68,26 @@ node dist/cli.js index          # or: npm link, then `rewound index`
 
 By default rewound reads `~/.claude/projects/**/*.jsonl` (read-only — it never modifies your transcripts) and writes its own database to `~/.rewound/rewound.db`. Override the DB path with `--db <path>` or `REWOUND_DB=<path>`.
 
+### Multi-machine: your history follows you
+
+If you work across machines, `rewound sync` gives you one merged history with zero
+servers involved. Point it at any folder that already syncs between your machines:
+
+```bash
+rewound sync ~/GoogleDrive/rewound     # or Dropbox, Syncthing, a private git repo,
+                                       # an rclone mount of S3 / Supabase storage...
+```
+
+Each machine writes its own snapshot (`<hostname>.rewound.db`) into the folder and
+merges everyone else's — richer copy of a session wins, repeat runs are no-ops. Because
+every host only ever writes its own file, eventually-consistent syncers like Drive and
+Dropbox never see write conflicts. Run it from cron alongside `rewound index` and
+continuity is automatic. `rewound merge <file.db>` is the underlying primitive if you'd
+rather move snapshots by hand (scp, USB stick).
+
+Privacy stance unchanged: rewound itself never opens a network connection — *you* choose
+the transport, and your data only ever lands on storage you control.
+
 ### Your history outlives Claude Code's cleanup
 
 Claude Code deletes transcripts older than ~30 days at startup. rewound's index is permanent: once a session is indexed, it stays searchable even after the source file is gone (it's kept as an *archived* session). Anything from before you started indexing is already unrecoverable — so the best moment to run `rewound index` is now, and then regularly. A cron line makes it automatic:

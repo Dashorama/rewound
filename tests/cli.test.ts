@@ -9,6 +9,8 @@ import {
   runSessions,
   runShow,
   runStats,
+  runMerge,
+  runSync,
   buildProgram,
   isMainModule,
   runServe,
@@ -419,5 +421,51 @@ describe("bin aliases", () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
     expect(pkg.bin.rewound).toBe("dist/cli.js");
     expect(pkg.bin.rw).toBe("dist/cli.js");
+  });
+});
+
+describe("runMerge / runSync", () => {
+  it("merges another db file and reports counts", () => {
+    const otherDbPath = path.join(tmpDir, "other.db");
+    const otherProjectDir = path.join(tmpDir, "other-projects", "-home-dev-otherapp");
+    fs.mkdirSync(otherProjectDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(otherProjectDir, "sess-remote-1.jsonl"),
+      line({
+        type: "user",
+        uuid: "r1",
+        timestamp: "2026-07-10T10:00:00.000Z",
+        cwd: "/home/dev/otherapp",
+        isSidechain: false,
+        sessionId: "sess-remote-1",
+        message: { role: "user", content: "remote machine session about kafka rebalance" },
+      }) + "\n"
+    );
+    runIndex({ roots: [path.join(tmpDir, "other-projects")], db: otherDbPath, json: true }, () => {});
+
+    const lines: string[] = [];
+    runMerge(otherDbPath, { db: dbPath }, (l) => lines.push(l));
+    expect(lines.join("\n")).toMatch(/sessions added: 1/);
+
+    const hits: string[] = [];
+    runSearch("kafka rebalance", { db: dbPath }, (l) => hits.push(l));
+    expect(hits.join("\n")).toContain("sess-remote-1");
+  });
+
+  it("syncs through a shared dir and reports export + merges", () => {
+    const shared = path.join(tmpDir, "shared");
+    const lines: string[] = [];
+    runSync(shared, { db: dbPath, host: "laptop" }, (l) => lines.push(l));
+    const out = lines.join("\n");
+    expect(out).toMatch(/exported snapshot: laptop\.rewound\.db/);
+    expect(out).toMatch(/snapshots merged: 0/);
+    expect(fs.existsSync(path.join(shared, "laptop.rewound.db"))).toBe(true);
+  });
+
+  it("wires merge and sync into the CLI program", () => {
+    const program = buildProgram();
+    const names = program.commands.map((c) => c.name());
+    expect(names).toContain("merge");
+    expect(names).toContain("sync");
   });
 });
