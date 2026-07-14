@@ -18,6 +18,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Same npm major as the publish job. verify must run the SAME toolchain
+      # the publish job will, or stricter checks (npm 11's lockfile-sync) fire
+      # only after the human approval gate — which defeats the gate. Learned on
+      # the maiden voyage (v0.4.1, run 29289819399).
+      - run: npm install -g npm@11
       - run: npm ci
       - run: npm test
       - name: tag must match package.json version
@@ -41,7 +46,7 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - name: npm 11.5.1+ required for trusted publishing
-        run: npm install -g npm@latest
+      - name: npm 11.5.1+ required for trusted publishing (same major as verify)
+        run: npm install -g npm@11
       - run: npm ci
       - run: npm publish # OIDC: no token; provenance attached automatically

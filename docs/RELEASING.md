@@ -20,6 +20,13 @@ git tag -a v0.5.0 -m "rewound v0.5.0" && git push origin main v0.5.0
 4. Approve from github.com or the GitHub mobile app (repo → Actions → the waiting run
    → Review deployments → approve). npm publish happens with provenance attached.
 
+## If a release run fails
+
+Tags are immutable: never delete, move, or re-push a version tag — provenance and
+anyone who fetched it depend on that. Fix the problem on `main`, bump to the **next
+patch version**, and tag that. (v0.4.1 is a permanent example: its run failed on a
+lockfile-sync error, the fix shipped as v0.4.2.)
+
 ## After npm publish: Homebrew
 
 ```bash
