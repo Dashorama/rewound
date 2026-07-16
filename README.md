@@ -166,6 +166,6 @@ Server-rendered with zero frontend build step, colorblind-safe palette (blue/ora
 
 More harness adapters are next: Copilot CLI and OpenCode transcripts are already mapped (see repo issues/roadmap). Keyword-first search is deliberate for v0.x — it's fast, local, and predictable. Local hybrid/semantic search (vector index built with a local embedding model, no API keys, fused with FTS ranking) is planned once the keyword surface has proven itself; the gap it closes is vocabulary mismatch ("that time the port was already taken" vs `EADDRINUSE`).
 
-## License & pricing
+## License
 
-Source-available; **free for personal use**. Commercial/team use requires a paid license: **$29 individual · $99 team (up to 10 seats)** — one-time, per major version. v0.x ships with no license-key enforcement; buying a license is how you comply, and how you keep this maintained. See [LICENSE](LICENSE).
+Source-available and **free for personal use**. Terms for commercial/team use are in [LICENSE](LICENSE).
