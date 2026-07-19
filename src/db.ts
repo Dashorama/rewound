@@ -277,6 +277,12 @@ export function upsertSessionMessages(
       },
       { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
     );
+    if (session.usageDelta) {
+      usageSums.input += session.usageDelta.input;
+      usageSums.output += session.usageDelta.output;
+      usageSums.cacheRead += session.usageDelta.cacheRead;
+      usageSums.cacheWrite += session.usageDelta.cacheWrite;
+    }
 
     const messageCount = (existing?.messageCount ?? 0) + session.messages.length;
     const inputTokens = (existing?.inputTokens ?? 0) + usageSums.input;

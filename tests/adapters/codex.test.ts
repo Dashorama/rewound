@@ -85,6 +85,46 @@ describe("CodexAdapter", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
+  it("routes harness scaffolding sent as user messages to toolText, not prose (real-corpus finding)", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-codex-scaf-"));
+    const p = writeRollout(tmp, `rollout-2026-06-01T10-00-00-${UUID}.jsonl`, [
+      { timestamp: "2026-06-01T10:00:00.000Z", type: "session_meta", payload: { id: UUID, cwd: "/w" } },
+      { timestamp: "2026-06-01T10:00:01.000Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>\n  <cwd>/w</cwd>\n</environment_context>" }] } },
+      { timestamp: "2026-06-01T10:00:02.000Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<user_instructions>always use tabs</user_instructions>" }] } },
+      { timestamp: "2026-06-01T10:00:03.000Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "fix the flaky websocket test" }] } },
+    ]);
+    const session = adapter.parse(p);
+    const scaffolding = session.messages.filter((m) => (m.toolText ?? "").includes("environment_context") || (m.toolText ?? "").includes("user_instructions"));
+    expect(scaffolding.length).toBe(2);
+    for (const m of scaffolding) expect(m.text).toBe("");
+    const real = session.messages.find((m) => m.text.includes("flaky websocket"))!;
+    expect(real.toolText ?? "").toBe("");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("accumulates per-turn token usage from token_count events into usageDelta", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-codex-tok-"));
+    const p = writeRollout(tmp, `rollout-2026-06-01T10-00-00-${UUID}.jsonl`, [
+      { timestamp: "2026-06-01T10:00:00.000Z", type: "session_meta", payload: { id: UUID, cwd: "/w" } },
+      { timestamp: "2026-06-01T10:00:01.000Z", type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 16978, cached_input_tokens: 9984, output_tokens: 188 }, last_token_usage: { input_tokens: 16978, cached_input_tokens: 9984, output_tokens: 188 } } } },
+      { timestamp: "2026-06-01T10:00:02.000Z", type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 34172, cached_input_tokens: 19968, output_tokens: 228 }, last_token_usage: { input_tokens: 17194, cached_input_tokens: 9984, output_tokens: 40 } } } },
+      // tolerant of events with no last_token_usage (older format): contributes nothing
+      { timestamp: "2026-06-01T10:00:03.000Z", type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 99999 } } } },
+    ]);
+    const session = adapter.parse(p);
+    // input = non-cached input; cacheRead = cached portion (mirrors the Claude split)
+    expect(session.usageDelta).toEqual({
+      input: 16978 - 9984 + (17194 - 9984),
+      output: 188 + 40,
+      cacheRead: 9984 + 9984,
+      cacheWrite: 0,
+    });
+    // usage arrives once per chunk: a resume from bytesConsumed reports no delta
+    const partial = adapter.parse(p, session.bytesConsumed);
+    expect(partial.usageDelta).toBeUndefined();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
   it("never consumes a torn trailing line", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-codex-torn-"));
     const p = writeRollout(tmp, `rollout-2026-06-01T10-00-00-${UUID}.jsonl`, sampleLines());

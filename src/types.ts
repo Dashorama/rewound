@@ -27,6 +27,10 @@ export interface NormalizedSession {
   startedAt?: string;
   endedAt?: string;
   messages: NormalizedMessage[];
+  // Session-level token usage for this parse chunk, for sources (Codex CLI)
+  // that report usage in separate per-turn events rather than on messages.
+  // Summed into the session totals exactly like per-message usage.
+  usageDelta?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   parseErrors: number;
   // Byte offset (relative to the whole file, i.e. fromByte + bytes read this
   // call) right after the last complete (newline-terminated) line this parse

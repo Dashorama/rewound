@@ -73,7 +73,7 @@ beforeEach(() => {
     ].join("\n") + "\n"
   );
 
-  runIndex({ roots: [tmpDir], db: dbPath, json: true }, () => {});
+  runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], db: dbPath, json: true }, () => {});
 });
 
 afterEach(() => {
@@ -95,7 +95,7 @@ describe("highlightSnippet / stripSnippetMarkers", () => {
 describe("runIndex", () => {
   it("emits JSON with the expected shape", () => {
     const lines: string[] = [];
-    runIndex({ roots: [tmpDir], db: dbPath, json: true }, (s) => lines.push(s));
+    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], db: dbPath, json: true }, (s) => lines.push(s));
     const parsed = JSON.parse(lines[0]);
     expect(parsed).toMatchObject({
       filesScanned: expect.any(Number),
@@ -444,7 +444,7 @@ describe("search output ergonomics (grouped hits, snippet cleanup)", () => {
         },
       }) + "\n"
     );
-    runIndex({ roots: [tmpDir], db: dbPath, json: true }, () => {});
+    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], db: dbPath, json: true }, () => {});
 
     const lines: string[] = [];
     runSearch("webhookretry", { db: dbPath }, (l) => lines.push(l));
@@ -494,7 +494,7 @@ describe("runMerge / runSync", () => {
         message: { role: "user", content: "remote machine session about kafka rebalance" },
       }) + "\n"
     );
-    runIndex({ roots: [path.join(tmpDir, "other-projects")], db: otherDbPath, json: true }, () => {});
+    runIndex({ roots: [path.join(tmpDir, "other-projects")], codexRoots: [path.join(tmpDir, "no-codex-here")], db: otherDbPath, json: true }, () => {});
 
     const lines: string[] = [];
     runMerge(otherDbPath, { db: dbPath }, (l) => lines.push(l));

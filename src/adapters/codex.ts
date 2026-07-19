@@ -12,7 +12,11 @@ import { consumeCompleteLines, walkJsonlFiles } from "./jsonl.js";
 //   response_item reasoning     → assistant prose (like Claude thinking)
 //   response_item function_call → assistant tool-call entry
 //   response_item function_call_output → tool output (ranked below prose)
-//   compacted / event_msg / anything unknown → skipped silently
+//   event_msg token_count       → per-turn usage, summed into usageDelta
+//   compacted / anything unknown → skipped silently
+// Harness scaffolding arrives as user messages (<environment_context>,
+// <user_instructions>) — real-corpus finding: routed to toolText so boilerplate
+// never outranks what a human actually typed.
 // Rollout files can reach hundreds of MB from compaction replay; skipping
 // unknown types cheaply and never re-reading consumed bytes matters here.
 
@@ -23,6 +27,7 @@ interface RolloutLine {
 }
 
 const ROLLOUT_RE = /rollout-.*\.jsonl$/;
+const SCAFFOLDING_RE = /^\s*<(environment_context|user_instructions|permissions_context)\b/;
 const UUID_RE = /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$/;
 
 function contentText(content: unknown): string {
@@ -63,6 +68,7 @@ export class CodexAdapter implements SourceAdapter {
     let startedAt: string | undefined;
     let endedAt: string | undefined;
     let parseErrors = 0;
+    let usageDelta: { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined;
 
     const push = (m: Omit<NormalizedMessage, "uuid" | "isSidechain">) => {
       messages.push({ ...m, uuid: messageUuid(m.ts, m.role, m.text || m.toolText || ""), isSidechain: false });
@@ -101,7 +107,25 @@ export class CodexAdapter implements SourceAdapter {
         if (typeof p.model === "string") model = p.model;
         continue;
       }
-      if (record.type !== "response_item") continue; // compacted, event_msg, drift: skip
+      if (record.type === "event_msg") {
+        // token_count events carry per-turn usage in last_token_usage; the
+        // cumulative total_token_usage is deliberately ignored — summing
+        // per-turn deltas stays correct under incremental byte-offset parsing.
+        if (p.type === "token_count") {
+          const info = p.info as Record<string, unknown> | undefined;
+          const last = info?.last_token_usage as Record<string, unknown> | undefined;
+          if (last) {
+            const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+            const cached = n(last.cached_input_tokens);
+            usageDelta ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+            usageDelta.input += Math.max(0, n(last.input_tokens) - cached);
+            usageDelta.output += n(last.output_tokens);
+            usageDelta.cacheRead += cached;
+          }
+        }
+        continue;
+      }
+      if (record.type !== "response_item") continue; // compacted, drift: skip
 
       const itemType = p.type;
       if (itemType === "message") {
@@ -109,7 +133,11 @@ export class CodexAdapter implements SourceAdapter {
         if (!role) continue;
         const text = contentText(p.content);
         if (!text) continue;
-        push({ role, ts, text, tools: [], model: role === "assistant" ? model : undefined });
+        if (role === "user" && SCAFFOLDING_RE.test(text)) {
+          push({ role, ts, text: "", toolText: text, tools: [] });
+        } else {
+          push({ role, ts, text, tools: [], model: role === "assistant" ? model : undefined });
+        }
       } else if (itemType === "reasoning") {
         const text = [contentText(p.summary), contentText(p.content)].filter(Boolean).join("\n\n");
         if (text) push({ role: "assistant", ts, text, tools: [], model });
@@ -133,6 +161,7 @@ export class CodexAdapter implements SourceAdapter {
       startedAt,
       endedAt,
       messages,
+      usageDelta,
       parseErrors,
       bytesConsumed,
     };
