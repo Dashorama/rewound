@@ -10,3 +10,4 @@ CLAUDE.md
 docs-internal/
 .mcp.json
 *-mcp.json
+.heartbeat-snooze
