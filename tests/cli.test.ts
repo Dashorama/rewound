@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  getVersion,
   runIndex,
   runSearch,
   runSessions,
@@ -257,6 +258,58 @@ describe("parsePositiveInt", () => {
   it("rejects zero and negative values", () => {
     expect(() => parsePositiveInt("0")).toThrow();
     expect(() => parsePositiveInt("-5")).toThrow();
+  });
+});
+
+describe("first-run polish (v0.4.3)", () => {
+  it("getVersion matches package.json", () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    expect(getVersion()).toBe(pkg.version);
+  });
+
+  it("program exposes --version", () => {
+    const program = buildProgram();
+    expect(program.version()).toBe(getVersion());
+  });
+
+  it("every command has a non-empty description in help", () => {
+    const program = buildProgram();
+    for (const cmd of program.commands) {
+      if (cmd.name() === "help") continue;
+      expect(cmd.description(), `command "${cmd.name()}" is missing a description`).not.toBe("");
+    }
+  });
+
+  it("index with zero files found prints the scanned roots and a --roots hint", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-emptyidx-"));
+    try {
+      const lines: string[] = [];
+      const emptyRoot = path.join(tmpDir, "nothing-here");
+      runIndex({ roots: [emptyRoot], codexRoots: [emptyRoot], db: path.join(tmpDir, "db.sqlite") }, (s) =>
+        lines.push(s)
+      );
+      const out = lines.join("\n");
+      expect(out).toContain("no transcript files found");
+      expect(out).toContain(emptyRoot);
+      expect(out).toContain("--roots");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("index with zero files stays machine-clean in --json mode", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-emptyjson-"));
+    try {
+      const lines: string[] = [];
+      runIndex(
+        { roots: [path.join(tmpDir, "x")], codexRoots: [path.join(tmpDir, "x")], db: path.join(tmpDir, "db.sqlite"), json: true },
+        (s) => lines.push(s)
+      );
+      expect(lines).toHaveLength(1);
+      expect(() => JSON.parse(lines[0])).not.toThrow();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

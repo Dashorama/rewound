@@ -34,6 +34,12 @@ import { buildServer } from "./server.js";
 const DEFAULT_ROOTS = [path.join(os.homedir(), ".claude", "projects")];
 const DEFAULT_CODEX_ROOTS = [path.join(os.homedir(), ".codex", "sessions")];
 
+export function getVersion(): string {
+  // ../package.json resolves correctly from both src/ (tests via tsx) and dist/.
+  const pkgPath = fileURLToPath(new URL("../package.json", import.meta.url));
+  return JSON.parse(fs.readFileSync(pkgPath, "utf8")).version as string;
+}
+
 type Logger = (line: string) => void;
 const defaultLog: Logger = (line) => console.log(line);
 
@@ -83,6 +89,13 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
   log(`files scanned: ${stats.filesScanned}  new: ${stats.filesNew}  updated: ${stats.filesUpdated}`);
   log(`messages indexed: ${stats.messagesIndexed}  parse errors: ${stats.parseErrors}`);
   log(`elapsed: ${stats.elapsedMs}ms`);
+  if (stats.filesScanned === 0) {
+    log("");
+    log("no transcript files found. roots scanned:");
+    for (const r of claudeRoots) log(`  ${r}  (Claude Code)`);
+    for (const r of codexRoots) log(`  ${r}  (Codex CLI)`);
+    log("transcripts elsewhere? point rewound at them with --roots / --codex-roots");
+  }
 }
 
 export interface SearchCliOptions extends SearchOptions {
@@ -350,10 +363,14 @@ export async function runServe(opts: ServeCliOptions, log: Logger = defaultLog) 
 
 export function buildProgram(): Command {
   const program = new Command();
-  program.name("rewound").description("Grep for everything your AI coding agents ever did.");
+  program
+    .name("rewound")
+    .description("Grep for everything your AI coding agents ever did.")
+    .version(getVersion());
 
   program
     .command("index")
+    .description("scan agent transcripts (Claude Code + Codex CLI) into the local search index")
     .option("--roots <dirs...>", "Claude Code root directories to scan")
     .option("--codex-roots <dirs...>", "Codex CLI session roots (default: ~/.codex/sessions)")
     .option("--db <path>", "database path")
@@ -362,6 +379,7 @@ export function buildProgram(): Command {
 
   program
     .command("search <query>")
+    .description("full-text search across every indexed session")
     .option("--project <substr>", "filter by project directory substring")
     .option("--since <iso-or-relative>", "ISO timestamp or relative like 7d / 24h")
     .option("--role <role>", "filter by role: user or assistant")
@@ -375,6 +393,7 @@ export function buildProgram(): Command {
 
   program
     .command("sessions")
+    .description("list indexed sessions, newest first")
     .option("--project <substr>", "filter by project directory substring")
     .option("--limit <n>", "max results", parsePositiveInt)
     .option("--db <path>", "database path")
@@ -383,6 +402,7 @@ export function buildProgram(): Command {
 
   program
     .command("show <session-id-or-prefix>")
+    .description("print a full session transcript")
     .option("--db <path>", "database path")
     .option("--json", "output JSON")
     .action((idOrPrefix, opts) => runShow(idOrPrefix, opts));
@@ -415,6 +435,7 @@ export function buildProgram(): Command {
 
   program
     .command("stats")
+    .description("per-project session/message counts with estimated API-equivalent cost")
     .option("--db <path>", "database path")
     .option("--json", "output JSON")
     .action((opts) => runStats(opts));
