@@ -139,7 +139,7 @@ describe("OpenCodeAdapter.parseSince — full scan", () => {
     expect(s.messages).toHaveLength(2);
     expect(s.messages[0]).toMatchObject({ uuid: "msg1", role: "user", text: "fix the login bug", model: undefined });
     expect(s.messages[1]).toMatchObject({ uuid: "msg2", role: "assistant", text: "looking at login.ts", model: "big-pickle" });
-    expect(cursor).toBe(2000);
+    expect(cursor.value).toBe(2000);
   });
 
   it("routes tool output and reasoning text to toolText, never prose (low-weight, spec-mandated)", () => {
@@ -186,7 +186,7 @@ describe("OpenCodeAdapter.parseSince — full scan", () => {
 
     const { sessions, cursor } = new OpenCodeAdapter().parseSince(dbPath);
     expect(sessions.find((s) => s.id === "child")).toBeUndefined();
-    expect(cursor).toBe(2000);
+    expect(cursor.value).toBe(2000);
   });
 
   it("skips a message row whose parent session no longer exists, without throwing", () => {
@@ -233,7 +233,7 @@ describe("OpenCodeAdapter.parseSince — incremental resume (watermark cursor)",
     const first = adapter.parseSince(dbPath);
     const second = adapter.parseSince(dbPath, first.cursor);
     expect(second.sessions).toEqual([]);
-    expect(second.cursor).toBe(first.cursor);
+    expect(second.cursor).toEqual(first.cursor);
   });
 
   it("rebuilds a message's full text when a new part streams into it after it was already indexed", () => {
@@ -272,7 +272,48 @@ describe("OpenCodeAdapter.parseSince — incremental resume (watermark cursor)",
     const second = adapter.parseSince(dbPath, first.cursor);
     expect(second.sessions).toHaveLength(1);
     expect(second.sessions[0].messages[0].uuid).toBe("msg1");
-    expect(second.cursor).toBe(5000);
+    expect(second.cursor.value).toBe(5000);
+  });
+
+  it("does not permanently lose a distinct message that ties the exact cursor timestamp of one already seen", () => {
+    // Confirmed against the real opencode.db: distinct rows sharing an
+    // identical epoch-ms time_updated are not hypothetical (multiple parts
+    // land in the same millisecond routinely). A bare max(time_updated)
+    // cursor with a strict "> " boundary would exclude msgB forever, since
+    // its time_updated ties the value already persisted from run 1.
+    const { dbPath, db } = makeDb(tmpDir);
+    insertSession(db, { id: "ses1", directory: "/tmp", timeCreated: 1000, timeUpdated: 5000 });
+    insertMessage(db, { id: "msgA", sessionId: "ses1", role: "user", timeCreated: 1000, timeUpdated: 5000 });
+    insertPart(db, { id: "pA", messageId: "msgA", sessionId: "ses1", type: "text", text: "first", timeCreated: 1000, timeUpdated: 5000 });
+
+    const adapter = new OpenCodeAdapter();
+    const first = adapter.parseSince(dbPath);
+    expect(first.cursor.value).toBe(5000);
+
+    // A second, DISTINCT message arrives later but happens to tie the exact
+    // same time_updated value the previous run already advanced past.
+    insertMessage(db, { id: "msgB", sessionId: "ses1", role: "user", timeCreated: 6000, timeUpdated: 5000 });
+    insertPart(db, { id: "pB", messageId: "msgB", sessionId: "ses1", type: "text", text: "second, tied timestamp", timeCreated: 6000, timeUpdated: 5000 });
+    db.close();
+
+    const second = adapter.parseSince(dbPath, first.cursor);
+    const seenUuids = second.sessions.flatMap((s) => s.messages.map((m) => m.uuid));
+    expect(seenUuids).toContain("msgB");
+  });
+
+  it("stays a true no-op on a third run when nothing changed after the tie was already accounted for", () => {
+    const { dbPath, db } = makeDb(tmpDir);
+    insertSession(db, { id: "ses1", directory: "/tmp", timeCreated: 1000, timeUpdated: 5000 });
+    insertMessage(db, { id: "msgA", sessionId: "ses1", role: "user", timeCreated: 1000, timeUpdated: 5000 });
+    insertPart(db, { id: "pA", messageId: "msgA", sessionId: "ses1", type: "text", text: "first", timeCreated: 1000, timeUpdated: 5000 });
+    insertMessage(db, { id: "msgB", sessionId: "ses1", role: "user", timeCreated: 6000, timeUpdated: 5000 });
+    insertPart(db, { id: "pB", messageId: "msgB", sessionId: "ses1", type: "text", text: "second, tied timestamp", timeCreated: 6000, timeUpdated: 5000 });
+    db.close();
+
+    const adapter = new OpenCodeAdapter();
+    const first = adapter.parseSince(dbPath); // catches both msgA and msgB in one pass
+    const second = adapter.parseSince(dbPath, first.cursor); // nothing new: must be empty
+    expect(second.sessions).toEqual([]);
   });
 });
 

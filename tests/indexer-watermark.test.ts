@@ -106,7 +106,7 @@ describe("indexAllWatermark", () => {
     expect(stats2.filesNew).toBe(0);
     expect(stats2.filesUpdated).toBe(0);
     expect(stats2.messagesIndexed).toBe(0);
-    expect(getSourceCursor(db, srcPath)).toEqual({ kind: "watermark", value: 1000 });
+    expect(getSourceCursor(db, srcPath)).toEqual({ kind: "watermark", value: 1000, tieBreakIds: ["msg1"] });
     db.close();
   });
 

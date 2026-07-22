@@ -551,15 +551,15 @@ describe("source cursor tracking (watermark-cursor adapters, e.g. OpenCode)", ()
     expect(getSourceCursor(db, "/home/dev/.local/share/opencode/opencode.db")).toBeUndefined();
   });
 
-  it("round-trips a watermark cursor", () => {
-    upsertSourceCursor(db, "/x/opencode.db", "opencode", { kind: "watermark", value: 1234 });
-    expect(getSourceCursor(db, "/x/opencode.db")).toEqual({ kind: "watermark", value: 1234 });
+  it("round-trips a watermark cursor, including its tie-break id set", () => {
+    upsertSourceCursor(db, "/x/opencode.db", "opencode", { kind: "watermark", value: 1234, tieBreakIds: ["msg1", "msg2"] });
+    expect(getSourceCursor(db, "/x/opencode.db")).toEqual({ kind: "watermark", value: 1234, tieBreakIds: ["msg1", "msg2"] });
   });
 
   it("upserting the same source path advances the cursor rather than duplicating the row", () => {
-    upsertSourceCursor(db, "/x/opencode.db", "opencode", { kind: "watermark", value: 10 });
-    upsertSourceCursor(db, "/x/opencode.db", "opencode", { kind: "watermark", value: 20 });
-    expect(getSourceCursor(db, "/x/opencode.db")).toEqual({ kind: "watermark", value: 20 });
+    upsertSourceCursor(db, "/x/opencode.db", "opencode", { kind: "watermark", value: 10, tieBreakIds: [] });
+    upsertSourceCursor(db, "/x/opencode.db", "opencode", { kind: "watermark", value: 20, tieBreakIds: ["msg3"] });
+    expect(getSourceCursor(db, "/x/opencode.db")).toEqual({ kind: "watermark", value: 20, tieBreakIds: ["msg3"] });
     const count = db.prepare("SELECT COUNT(*) as c FROM sources").get() as { c: number };
     expect(count.c).toBe(1);
   });

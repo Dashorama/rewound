@@ -47,6 +47,18 @@ export interface SourceAdapter {
   parse(filePath: string, fromByte?: number): NormalizedSession; // partial parse for incremental
 }
 
+// A bare max(time_updated) is not enough to resume safely: two distinct rows
+// can share the exact same millisecond (confirmed on a real OpenCode DB — not
+// a hypothetical), so "time_updated > cursor" alone can permanently skip a row
+// that ties the boundary but arrived after the run that set it. tieBreakIds is
+// every row id already accounted for at exactly `value`; the next scan treats
+// "time_updated == value AND id in tieBreakIds" as already-seen (skip, keeps a
+// truly unchanged source a no-op) and anything else at that boundary as new.
+export interface WatermarkCursorValue {
+  value: number;
+  tieBreakIds: string[];
+}
+
 // The resume token an adapter defines for its own source, persisted by the
 // indexer between runs. Two kinds exist: "byte-offsets" (SourceAdapter above —
 // one append-only file per session) and "watermark" (WatermarkSourceAdapter
@@ -54,7 +66,7 @@ export interface SourceAdapter {
 // resume is a high-water mark on last-modified time instead of a byte count).
 export type SourceCursor =
   | { kind: "byte-offsets"; value: number }
-  | { kind: "watermark"; value: number };
+  | ({ kind: "watermark" } & WatermarkCursorValue);
 
 // For sources where one file/DB is shared by many sessions and existing rows
 // are updated in place rather than only appended (e.g. OpenCode's SQLite DB).
@@ -65,5 +77,8 @@ export interface WatermarkSourceAdapter {
   id: string;
   cursorKind: "watermark";
   discover(roots: string[]): string[]; // source paths it owns (e.g. a shared db file)
-  parseSince(sourcePath: string, cursor?: number): { sessions: NormalizedSession[]; cursor: number };
+  parseSince(
+    sourcePath: string,
+    cursor?: WatermarkCursorValue
+  ): { sessions: NormalizedSession[]; cursor: WatermarkCursorValue };
 }
