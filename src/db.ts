@@ -344,6 +344,14 @@ export function upsertSessionMessages(
     const cacheReadTokens = (existing?.cacheReadTokens ?? 0) + usageSums.cacheRead;
     const cacheWriteTokens = (existing?.cacheWriteTokens ?? 0) + usageSums.cacheWrite;
     const estCostUsd = (existing?.estCostUsd ?? 0) + costDelta;
+    // Same known limitation as usage above: parse_errors also stays additive
+    // in upsert mode. Unlike message_count, it isn't stored per-message, so a
+    // message that keeps re-touching the same malformed sibling row (e.g. one
+    // permanently-bad part on an otherwise-live message) would drift upward
+    // rather than reflect a true current count. No per-run CLI/web/MCP surface
+    // reads this stored column today (the CLI's own "parse errors: N" comes
+    // from the current run's fresh IndexStats, not this field) — low impact,
+    // but worth knowing if that ever changes.
     const parseErrors = (existing?.parseErrors ?? 0) + session.parseErrors;
 
     const title = session.title ?? existing?.title;
