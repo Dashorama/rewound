@@ -80,13 +80,19 @@ function insertPart(
     text?: string;
     tool?: string;
     output?: string;
+    error?: string;
     timeCreated: number;
     timeUpdated: number;
   }
 ): void {
   let data: Record<string, unknown>;
   if (p.type === "text") data = { type: "text", text: p.text };
-  else if (p.type === "tool") data = { type: "tool", tool: p.tool, state: { output: p.output } };
+  else if (p.type === "tool")
+    data = {
+      type: "tool",
+      tool: p.tool,
+      state: p.error ? { status: "error", error: p.error } : { status: "completed", output: p.output },
+    };
   else if (p.type === "reasoning") data = { type: "reasoning", text: p.text };
   else data = { type: p.type };
   db.prepare(
@@ -157,6 +163,32 @@ describe("OpenCodeAdapter.parseSince — full scan", () => {
     expect(msg.toolText).toContain("thinking about the bug");
     expect(msg.toolText).toContain("no such file");
     expect(msg.tools).toEqual(["bash"]);
+  });
+
+  it("indexes a failed tool call's error text (state.error), not just successful output", () => {
+    // Confirmed against the real corpus: state.output and state.error are
+    // mutually exclusive — an error-status tool part never carries output.
+    // Without reading state.error, a failed command's actual error text
+    // (often the only place it's recorded) never enters the index.
+    const { dbPath, db } = makeDb(tmpDir);
+    insertSession(db, { id: "ses1", directory: "/tmp", timeCreated: 1000, timeUpdated: 1000 });
+    insertMessage(db, { id: "msg1", sessionId: "ses1", role: "assistant", timeCreated: 1000, timeUpdated: 1000 });
+    insertPart(db, {
+      id: "p-tool-err",
+      messageId: "msg1",
+      sessionId: "ses1",
+      type: "tool",
+      tool: "glob",
+      error: "ripgrep archive did not contain executable",
+      timeCreated: 1000,
+      timeUpdated: 1000,
+    });
+    db.close();
+
+    const { sessions } = new OpenCodeAdapter().parseSince(dbPath);
+    const msg = sessions[0].messages[0];
+    expect(msg.toolText).toContain("ripgrep archive did not contain executable");
+    expect(msg.tools).toEqual(["glob"]);
   });
 
   it("ignores step-start, step-finish, patch, and compaction parts (v1 scope)", () => {
