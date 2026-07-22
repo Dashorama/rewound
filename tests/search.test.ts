@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { openDb, upsertSessionMessages } from "../src/db.js";
-import { search, buildMatchExpression } from "../src/search.js";
+import { search, buildMatchExpression, resumeCommand } from "../src/search.js";
 import type { NormalizedSession } from "../src/types.js";
 
 let dbPath: string;
@@ -172,5 +172,20 @@ describe("search", () => {
     expect(page0.length).toBe(1);
     expect(page1.length).toBe(1);
     expect(page0[0].uuid).not.toBe(page1[0].uuid);
+  });
+});
+
+describe("resumeCommand", () => {
+  it("returns the opencode --session incantation for opencode hits", () => {
+    expect(resumeCommand("opencode", "ses_abc123")).toBe("opencode --session ses_abc123");
+  });
+
+  it("still returns codex resume for codex hits", () => {
+    expect(resumeCommand("codex", "sess-1")).toBe("codex resume sess-1");
+  });
+
+  it("defaults to claude --resume for claude-code and unknown sources", () => {
+    expect(resumeCommand("claude-code", "sess-1")).toBe("claude --resume sess-1");
+    expect(resumeCommand(undefined, "sess-1")).toBe("claude --resume sess-1");
   });
 });
