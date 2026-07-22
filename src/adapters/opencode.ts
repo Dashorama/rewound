@@ -12,7 +12,7 @@ import type { NormalizedMessage, NormalizedSession, WatermarkCursorValue, Waterm
 //   message.data.role        -> role
 //   message.data.modelID     -> model (assistant only)
 //   part type='text'         -> prose (high FTS weight)
-//   part type='tool'         -> tool name + state.output, low weight
+//   part type='tool'         -> tool name + state.output/state.error, low weight
 //   part type='reasoning'    -> low weight, NOT prose (model monologue, user never typed it)
 // v1 deliberately skips: sessions with parent_id set (sub-sessions), and
 // step-start/step-finish/patch/compaction parts (no searchable content).
@@ -41,7 +41,30 @@ interface PartRow {
   data: string;
 }
 
-function walkForOpenCodeDb(entry: string, found: string[]): void {
+// A single scanned row from any of the three tables that carry time_updated,
+// tagged by kind so downstream logic can tell "this row IS a message" from
+// "this row is a session's own metadata bump" from "this is one of a
+// message's parts" without a second query. row_id is that row's own primary
+// key (namespaced by kind below into a tie-break key) — never the message id
+// for a part row, so a part row and its parent message are distinguishable.
+interface ScanRow {
+  kind: "m" | "p" | "s";
+  row_id: string;
+  msg_id: string | null; // the owning message id for kind m/p; null for kind s
+  session_id: string;
+  ts: number;
+}
+
+// Storage/snapshot trees under a real OpenCode home can be large and there is
+// no reason to walk them: the db always lives directly at <root>/opencode.db
+// (checked first, below). This bound exists purely as a safety net against a
+// pathologically deep or symlink-cyclic tree if a root is ever pointed
+// somewhere unusual — depth alone bounds a cycle too, since every recursive
+// call increments it regardless of whether the path repeats.
+const MAX_DISCOVER_DEPTH = 8;
+
+function walkForOpenCodeDb(entry: string, found: string[], depth = 0): void {
+  if (depth > MAX_DISCOVER_DEPTH) return;
   let stat: fs.Stats;
   try {
     stat = fs.statSync(entry);
@@ -60,8 +83,12 @@ function walkForOpenCodeDb(entry: string, found: string[]): void {
     return;
   }
   for (const e of entries) {
-    walkForOpenCodeDb(path.join(entry, e.name), found);
+    walkForOpenCodeDb(path.join(entry, e.name), found, depth + 1);
   }
+}
+
+function tieKey(r: Pick<ScanRow, "kind" | "row_id">): string {
+  return `${r.kind}:${r.row_id}`;
 }
 
 export class OpenCodeAdapter implements WatermarkSourceAdapter {
@@ -70,78 +97,100 @@ export class OpenCodeAdapter implements WatermarkSourceAdapter {
 
   discover(roots: string[]): string[] {
     const found: string[] = [];
-    for (const root of roots) walkForOpenCodeDb(root, found);
+    for (const root of roots) {
+      // Fast path: the well-known, documented layout — skips walking
+      // storage/snapshot/log/tool-output entirely for the common case.
+      const wellKnown = path.join(root, "opencode.db");
+      let isWellKnownFile = false;
+      try {
+        isWellKnownFile = fs.statSync(wellKnown).isFile();
+      } catch {
+        // doesn't exist — fall through to the bounded walk below
+      }
+      if (isWellKnownFile) {
+        found.push(wellKnown);
+        continue;
+      }
+      // root may itself be the db file (unusual, but supported), or the db
+      // could be nested somewhere under it — bounded recursive fallback.
+      walkForOpenCodeDb(root, found);
+    }
     return found;
   }
 
   parseSince(dbPath: string, cursor?: WatermarkCursorValue): { sessions: NormalizedSession[]; cursor: WatermarkCursorValue } {
-    const watermark = cursor?.value ?? 0;
-    const seenAtWatermark = new Set(cursor?.tieBreakIds ?? []);
+    const persistedWatermark = cursor?.value ?? 0;
     // Read-only, with a busy timeout: OpenCode may be actively writing (WAL
     // mode) while we read. Never open read-write against another tool's DB.
     const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 5000 });
     try {
-      // A bare max(time_updated) is not a safe cursor on its own: two distinct
-      // rows can share the exact same millisecond (confirmed on a real
-      // opencode.db), so a row tied with the persisted boundary but written
-      // after the run that set it would be silently skipped forever under a
-      // strict "> " comparison — and a blanket ">=" instead reprocesses the
-      // same already-seen row on every subsequent no-op run, forever. Splitting
-      // the query into "strictly newer" (always new) and "tied with the
-      // boundary but not in tieBreakIds" (new only if we haven't already
-      // accounted for that exact row) gets both properties at once.
-      const newerRows = db
+      // A restored/rolled-back source (e.g. an older backup copied back over
+      // opencode.db) can have a current max activity BEHIND our persisted
+      // cursor. Scanning "time_updated >= persistedWatermark" against that
+      // would then find nothing, forever — the byte-offset adapters have the
+      // analogous case (file shrank -> full reparse); here, reset to a fresh
+      // full scan instead.
+      const overallMax = db
         .prepare(
-          `SELECT DISTINCT message_id FROM (
-             SELECT id as message_id FROM message WHERE time_updated > ?
-             UNION
-             SELECT message_id FROM part WHERE time_updated > ?
+          `SELECT MAX(x) as m FROM (
+             SELECT time_updated as x FROM message
+             UNION ALL SELECT time_updated FROM part
+             UNION ALL SELECT time_updated FROM session
            )`
         )
-        .all(watermark, watermark) as Array<{ message_id: string }>;
-      const tiedRows = db
+        .get() as { m: number | null };
+      const rolledBack = overallMax.m !== null && overallMax.m < persistedWatermark;
+      const watermark = rolledBack ? 0 : persistedWatermark;
+      const seenAtWatermark = rolledBack ? new Set<string>() : new Set(cursor?.tieBreakIds ?? []);
+
+      // ONE combined, atomic read of every message/part/session row that
+      // could matter, tagged by kind — the next cursor AND which
+      // messages/sessions are touched are both derived purely from this same
+      // in-memory rowset below, never by issuing a second query against
+      // current DB state. An earlier version ran the touched-rows query and
+      // the next-cursor query separately; on a live WAL db (OpenCode may be
+      // writing while we read) a row committed between the two could be
+      // folded into the new cursor/tieBreakIds without ever having been in
+      // the touched set — silently skipped forever. A single statement
+      // closes that: there is no point after this call returns where a
+      // concurrent write could still affect what we derive from it.
+      const rows = db
         .prepare(
-          `SELECT DISTINCT message_id FROM (
-             SELECT id as message_id FROM message WHERE time_updated = ?
-             UNION
-             SELECT message_id FROM part WHERE time_updated = ?
-           )`
+          `SELECT 'm' as kind, id as row_id, id as msg_id, session_id, time_updated as ts FROM message WHERE time_updated >= ?
+           UNION ALL
+           SELECT 'p' as kind, id as row_id, message_id as msg_id, session_id, time_updated as ts FROM part WHERE time_updated >= ?
+           UNION ALL
+           SELECT 's' as kind, id as row_id, NULL as msg_id, id as session_id, time_updated as ts FROM session WHERE time_updated >= ?`
         )
-        .all(watermark, watermark) as Array<{ message_id: string }>;
+        .all(watermark, watermark, watermark) as ScanRow[];
 
-      const touchedIds = new Set<string>(newerRows.map((r) => r.message_id));
-      for (const r of tiedRows) if (!seenAtWatermark.has(r.message_id)) touchedIds.add(r.message_id);
-
-      if (touchedIds.size === 0) {
+      if (rows.length === 0) {
         return { sessions: [], cursor: { value: watermark, tieBreakIds: [...seenAtWatermark] } };
       }
 
-      // Next cursor: the max time_updated among every row >= the current
-      // watermark (independent of which rows we actually choose to index
-      // below, so a skipped row — bad JSON, a sub-session — can never
-      // permanently block the watermark from advancing), plus every message
-      // id tied at exactly that new max, to carry forward as the next run's
-      // tieBreakIds.
-      const maxRow = db
-        .prepare(
-          `SELECT MAX(x) as maxTs FROM (
-             SELECT time_updated as x FROM message WHERE time_updated >= ?
-             UNION ALL
-             SELECT time_updated FROM part WHERE time_updated >= ?
-           )`
-        )
-        .get(watermark, watermark) as { maxTs: number | null };
-      const nextValue = maxRow.maxTs ?? watermark;
-      const tiedAtNext = db
-        .prepare(
-          `SELECT DISTINCT message_id FROM (
-             SELECT id as message_id FROM message WHERE time_updated = ?
-             UNION
-             SELECT message_id FROM part WHERE time_updated = ?
-           )`
-        )
-        .all(nextValue, nextValue) as Array<{ message_id: string }>;
-      const nextCursor: WatermarkCursorValue = { value: nextValue, tieBreakIds: tiedAtNext.map((r) => r.message_id) };
+      let nextValue = watermark;
+      for (const r of rows) if (r.ts > nextValue) nextValue = r.ts;
+      const nextTieBreakIds = rows.filter((r) => r.ts === nextValue).map(tieKey);
+      const nextCursor: WatermarkCursorValue = { value: nextValue, tieBreakIds: nextTieBreakIds };
+
+      // A row is "new" if it's strictly newer than the watermark, or it ties
+      // the watermark but its own row id was never accounted for before —
+      // row-granular (not message-granular), so a new part landing at the
+      // same tied ms as an already-seen sibling row on the SAME message still
+      // counts as new (a message-level tie-break would wrongly suppress it).
+      const isNewRow = (r: ScanRow) => r.ts > watermark || (r.ts === watermark && !seenAtWatermark.has(tieKey(r)));
+
+      const touchedMessageIds = new Set<string>();
+      const touchedSessionIds = new Set<string>(); // sessions whose OWN row (title/etc) was touched
+      for (const r of rows) {
+        if (!isNewRow(r)) continue;
+        if (r.kind === "s") touchedSessionIds.add(r.session_id);
+        else touchedMessageIds.add(r.msg_id!);
+      }
+
+      if (touchedMessageIds.size === 0 && touchedSessionIds.size === 0) {
+        return { sessions: [], cursor: nextCursor };
+      }
 
       const getMessage = db.prepare(
         "SELECT id, session_id, time_created, time_updated, data FROM message WHERE id = ?"
@@ -151,15 +200,23 @@ export class OpenCodeAdapter implements WatermarkSourceAdapter {
       );
       const getSessionRow = db.prepare("SELECT id, directory, title, parent_id FROM session WHERE id = ?");
 
-      const bySessionMeta = new Map<string, SessionRow>();
+      const sessionRowCache = new Map<string, SessionRow | undefined>();
+      const resolveSessionRow = (sessionId: string): SessionRow | undefined => {
+        if (!sessionRowCache.has(sessionId)) {
+          sessionRowCache.set(sessionId, getSessionRow.get(sessionId) as SessionRow | undefined);
+        }
+        return sessionRowCache.get(sessionId);
+      };
+
       const bySessionMessages = new Map<string, NormalizedMessage[]>();
       const bySessionParseErrors = new Map<string, number>();
+      const emittedSessionIds = new Set<string>();
 
-      for (const message_id of touchedIds) {
+      for (const message_id of touchedMessageIds) {
         const msgRow = getMessage.get(message_id) as MessageRow | undefined;
         if (!msgRow) continue; // deleted between discover and parse
 
-        const sessionRow = getSessionRow.get(msgRow.session_id) as SessionRow | undefined;
+        const sessionRow = resolveSessionRow(msgRow.session_id);
         if (!sessionRow || sessionRow.parent_id) continue; // gone, or a sub-session (v1 scope)
 
         const bumpParseErrors = () =>
@@ -215,7 +272,6 @@ export class OpenCodeAdapter implements WatermarkSourceAdapter {
           isSidechain: false,
         };
 
-        if (!bySessionMeta.has(msgRow.session_id)) bySessionMeta.set(msgRow.session_id, sessionRow);
         if (!bySessionMessages.has(msgRow.session_id)) bySessionMessages.set(msgRow.session_id, []);
         bySessionMessages.get(msgRow.session_id)!.push(normMsg);
       }
@@ -223,7 +279,7 @@ export class OpenCodeAdapter implements WatermarkSourceAdapter {
       const sessions: NormalizedSession[] = [];
       for (const [sessionId, messages] of bySessionMessages) {
         messages.sort((a, b) => a.ts.localeCompare(b.ts));
-        const meta = bySessionMeta.get(sessionId)!;
+        const meta = resolveSessionRow(sessionId)!;
         sessions.push({
           id: sessionId,
           source: "opencode",
@@ -237,6 +293,32 @@ export class OpenCodeAdapter implements WatermarkSourceAdapter {
           parseErrors: bySessionParseErrors.get(sessionId) ?? 0,
           bytesConsumed: 0, // unused: watermark-cursor sources resume via parseSince's returned cursor, not a byte offset
         });
+        emittedSessionIds.add(sessionId);
+      }
+
+      // Sessions touched only via their own row (e.g. an AI-generated title
+      // that lands after the last message) get an empty-messages entry so
+      // the title/directory refresh still reaches upsertSessionMessages —
+      // and any session whose only touched message this round was malformed
+      // (parse error recorded, but never added to bySessionMessages) gets one
+      // too, so that error isn't silently dropped from the output entirely.
+      const needsEmptyEntry = new Set([...touchedSessionIds, ...bySessionParseErrors.keys()]);
+      for (const sessionId of needsEmptyEntry) {
+        if (emittedSessionIds.has(sessionId)) continue;
+        const sessionRow = resolveSessionRow(sessionId);
+        if (!sessionRow || sessionRow.parent_id) continue; // gone, or a sub-session (v1 scope)
+        sessions.push({
+          id: sessionId,
+          source: "opencode",
+          projectDir: sessionRow.directory,
+          projectDirSource: "cwd",
+          filePath: dbPath,
+          title: sessionRow.title,
+          messages: [],
+          parseErrors: bySessionParseErrors.get(sessionId) ?? 0,
+          bytesConsumed: 0,
+        });
+        emittedSessionIds.add(sessionId);
       }
 
       return { sessions, cursor: nextCursor };

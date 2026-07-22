@@ -107,7 +107,13 @@ describe("indexAllWatermark", () => {
     expect(stats2.filesNew).toBe(0);
     expect(stats2.filesUpdated).toBe(0);
     expect(stats2.messagesIndexed).toBe(0);
-    expect(getSourceCursor(db, srcPath)).toEqual({ kind: "watermark", value: 1000, tieBreakIds: ["msg1"] });
+    // Row-granular tie-break (F3): the message row, its part, and the
+    // session row itself are all tied at ts=1000, each tracked separately.
+    const persisted = getSourceCursor(db, srcPath);
+    expect(persisted?.kind).toBe("watermark");
+    if (persisted?.kind !== "watermark") throw new Error("expected a watermark cursor");
+    expect(persisted.value).toBe(1000);
+    expect(new Set(persisted.tieBreakIds)).toEqual(new Set(["m:msg1", "p:p1", "s:ses1"]));
     db.close();
   });
 
