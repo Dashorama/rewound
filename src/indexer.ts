@@ -162,7 +162,8 @@ export function indexAllWatermark(
 
   for (const sourcePath of discovered) {
     const existing = getSourceCursor(db, sourcePath);
-    const { sessions, cursor } = adapter.parseSince(sourcePath, existing?.value);
+    const existingCursor = existing?.kind === "watermark" ? { value: existing.value, tieBreakIds: existing.tieBreakIds } : undefined;
+    const { sessions, cursor } = adapter.parseSince(sourcePath, existingCursor);
 
     for (const session of sessions) {
       upsertSessionMessages(db, session, { mode: "upsert" });
@@ -173,7 +174,11 @@ export function indexAllWatermark(
     // Persisted even when nothing was indexed this run: the cursor tracks
     // everything parseSince scanned, not just what got upserted, so a
     // no-op run doesn't leave the source stuck re-scanning the same rows.
-    upsertSourceCursor(db, sourcePath, adapter.id, { kind: "watermark", value: cursor });
+    upsertSourceCursor(db, sourcePath, adapter.id, {
+      kind: "watermark",
+      value: cursor.value,
+      tieBreakIds: cursor.tieBreakIds,
+    });
     if (!existing) sourcesNew++;
     else if (sessions.length > 0) sourcesUpdated++;
   }

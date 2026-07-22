@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import type { NormalizedMessage, NormalizedSession, WatermarkSourceAdapter } from "../types.js";
+import type { NormalizedMessage, NormalizedSession, WatermarkCursorValue, WatermarkSourceAdapter } from "../types.js";
 
 // OpenCode persists all sessions in one shared SQLite DB (drizzle schema),
 // not one file per session — session/message/part, WAL mode, possibly being
@@ -74,28 +74,23 @@ export class OpenCodeAdapter implements WatermarkSourceAdapter {
     return found;
   }
 
-  parseSince(dbPath: string, cursor?: number): { sessions: NormalizedSession[]; cursor: number } {
-    const watermark = cursor ?? 0;
+  parseSince(dbPath: string, cursor?: WatermarkCursorValue): { sessions: NormalizedSession[]; cursor: WatermarkCursorValue } {
+    const watermark = cursor?.value ?? 0;
+    const seenAtWatermark = new Set(cursor?.tieBreakIds ?? []);
     // Read-only, with a busy timeout: OpenCode may be actively writing (WAL
     // mode) while we read. Never open read-write against another tool's DB.
     const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 5000 });
     try {
-      // The next cursor is the max time_updated among every row this call
-      // scanned — independent of which of those rows we actually choose to
-      // index below, so a row we skip (bad JSON, sub-session, ...) can never
-      // permanently block the watermark from advancing.
-      const maxRow = db
-        .prepare(
-          `SELECT MAX(x) as maxTs FROM (
-             SELECT time_updated as x FROM message WHERE time_updated > ?
-             UNION ALL
-             SELECT time_updated FROM part WHERE time_updated > ?
-           )`
-        )
-        .get(watermark, watermark) as { maxTs: number | null };
-      const nextCursor = maxRow.maxTs ?? watermark;
-
-      const touched = db
+      // A bare max(time_updated) is not a safe cursor on its own: two distinct
+      // rows can share the exact same millisecond (confirmed on a real
+      // opencode.db), so a row tied with the persisted boundary but written
+      // after the run that set it would be silently skipped forever under a
+      // strict "> " comparison — and a blanket ">=" instead reprocesses the
+      // same already-seen row on every subsequent no-op run, forever. Splitting
+      // the query into "strictly newer" (always new) and "tied with the
+      // boundary but not in tieBreakIds" (new only if we haven't already
+      // accounted for that exact row) gets both properties at once.
+      const newerRows = db
         .prepare(
           `SELECT DISTINCT message_id FROM (
              SELECT id as message_id FROM message WHERE time_updated > ?
@@ -104,8 +99,49 @@ export class OpenCodeAdapter implements WatermarkSourceAdapter {
            )`
         )
         .all(watermark, watermark) as Array<{ message_id: string }>;
+      const tiedRows = db
+        .prepare(
+          `SELECT DISTINCT message_id FROM (
+             SELECT id as message_id FROM message WHERE time_updated = ?
+             UNION
+             SELECT message_id FROM part WHERE time_updated = ?
+           )`
+        )
+        .all(watermark, watermark) as Array<{ message_id: string }>;
 
-      if (touched.length === 0) return { sessions: [], cursor: nextCursor };
+      const touchedIds = new Set<string>(newerRows.map((r) => r.message_id));
+      for (const r of tiedRows) if (!seenAtWatermark.has(r.message_id)) touchedIds.add(r.message_id);
+
+      if (touchedIds.size === 0) {
+        return { sessions: [], cursor: { value: watermark, tieBreakIds: [...seenAtWatermark] } };
+      }
+
+      // Next cursor: the max time_updated among every row >= the current
+      // watermark (independent of which rows we actually choose to index
+      // below, so a skipped row — bad JSON, a sub-session — can never
+      // permanently block the watermark from advancing), plus every message
+      // id tied at exactly that new max, to carry forward as the next run's
+      // tieBreakIds.
+      const maxRow = db
+        .prepare(
+          `SELECT MAX(x) as maxTs FROM (
+             SELECT time_updated as x FROM message WHERE time_updated >= ?
+             UNION ALL
+             SELECT time_updated FROM part WHERE time_updated >= ?
+           )`
+        )
+        .get(watermark, watermark) as { maxTs: number | null };
+      const nextValue = maxRow.maxTs ?? watermark;
+      const tiedAtNext = db
+        .prepare(
+          `SELECT DISTINCT message_id FROM (
+             SELECT id as message_id FROM message WHERE time_updated = ?
+             UNION
+             SELECT message_id FROM part WHERE time_updated = ?
+           )`
+        )
+        .all(nextValue, nextValue) as Array<{ message_id: string }>;
+      const nextCursor: WatermarkCursorValue = { value: nextValue, tieBreakIds: tiedAtNext.map((r) => r.message_id) };
 
       const getMessage = db.prepare(
         "SELECT id, session_id, time_created, time_updated, data FROM message WHERE id = ?"
@@ -119,7 +155,7 @@ export class OpenCodeAdapter implements WatermarkSourceAdapter {
       const bySessionMessages = new Map<string, NormalizedMessage[]>();
       const bySessionParseErrors = new Map<string, number>();
 
-      for (const { message_id } of touched) {
+      for (const message_id of touchedIds) {
         const msgRow = getMessage.get(message_id) as MessageRow | undefined;
         if (!msgRow) continue; // deleted between discover and parse
 

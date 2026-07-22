@@ -42,7 +42,8 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
 END;
 CREATE TABLE IF NOT EXISTS sources (
   path TEXT PRIMARY KEY, adapter_id TEXT NOT NULL,
-  cursor_kind TEXT NOT NULL, cursor_value INTEGER NOT NULL
+  cursor_kind TEXT NOT NULL, cursor_value INTEGER NOT NULL,
+  cursor_tie_ids TEXT NOT NULL DEFAULT '[]'
 );
 `;
 
@@ -162,11 +163,14 @@ export function upsertFileRecord(db: Database.Database, rec: FileRecord): void {
 // in types.ts) — analogous to the files table above, but keyed by source path
 // alone since one source holds many sessions, not one session per path.
 export function getSourceCursor(db: Database.Database, sourcePath: string): SourceCursor | undefined {
-  const row = db.prepare("SELECT cursor_kind, cursor_value FROM sources WHERE path = ?").get(sourcePath) as
-    | { cursor_kind: string; cursor_value: number }
-    | undefined;
+  const row = db.prepare("SELECT cursor_kind, cursor_value, cursor_tie_ids FROM sources WHERE path = ?").get(
+    sourcePath
+  ) as { cursor_kind: string; cursor_value: number; cursor_tie_ids: string } | undefined;
   if (!row) return undefined;
-  return { kind: row.cursor_kind as SourceCursor["kind"], value: row.cursor_value };
+  if (row.cursor_kind === "watermark") {
+    return { kind: "watermark", value: row.cursor_value, tieBreakIds: parseJsonStringArray(row.cursor_tie_ids) };
+  }
+  return { kind: row.cursor_kind as "byte-offsets", value: row.cursor_value };
 }
 
 export function upsertSourceCursor(
@@ -175,14 +179,16 @@ export function upsertSourceCursor(
   adapterId: string,
   cursor: SourceCursor
 ): void {
+  const tieIds = cursor.kind === "watermark" ? cursor.tieBreakIds : [];
   db.prepare(
-    `INSERT INTO sources (path, adapter_id, cursor_kind, cursor_value)
-     VALUES (@path, @adapterId, @kind, @value)
+    `INSERT INTO sources (path, adapter_id, cursor_kind, cursor_value, cursor_tie_ids)
+     VALUES (@path, @adapterId, @kind, @value, @tieIds)
      ON CONFLICT(path) DO UPDATE SET
        adapter_id = excluded.adapter_id,
        cursor_kind = excluded.cursor_kind,
-       cursor_value = excluded.cursor_value`
-  ).run({ path: sourcePath, adapterId, kind: cursor.kind, value: cursor.value });
+       cursor_value = excluded.cursor_value,
+       cursor_tie_ids = excluded.cursor_tie_ids`
+  ).run({ path: sourcePath, adapterId, kind: cursor.kind, value: cursor.value, tieIds: JSON.stringify(tieIds) });
 }
 
 export function listTrackedFiles(db: Database.Database): Array<{ path: string; sessionId: string }> {
