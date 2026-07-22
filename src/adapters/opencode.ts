@@ -192,7 +192,12 @@ export class OpenCodeAdapter implements WatermarkSourceAdapter {
             if (typeof pd.tool === "string") tools.push(pd.tool);
             const state = pd.state as Record<string, unknown> | undefined;
             const output = state?.output;
+            const error = state?.error;
+            // A failed tool call reports its error in state.error, not state.output
+            // (confirmed mutually exclusive on the real corpus) — without this, a
+            // failed command's actual error text never enters the index at all.
             if (typeof output === "string" && output) toolParts.push(output);
+            else if (typeof error === "string" && error) toolParts.push(error);
           } else if (pd.type === "reasoning") {
             if (typeof pd.text === "string" && pd.text) toolParts.push(pd.text);
           }
