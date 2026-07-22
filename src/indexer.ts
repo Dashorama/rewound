@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import type Database from "better-sqlite3";
-import type { SourceAdapter } from "./types.js";
+import type { NormalizedSession, SourceAdapter, WatermarkCursorValue, WatermarkSourceAdapter } from "./types.js";
 import {
   getFileRecord,
   upsertFileRecord,
@@ -8,6 +8,8 @@ import {
   markSessionArchived,
   listTrackedFiles,
   getSession,
+  getSourceCursor,
+  upsertSourceCursor,
 } from "./db.js";
 
 export interface IndexStats {
@@ -132,6 +134,72 @@ export function indexAll(db: Database.Database, adapter: SourceAdapter, roots: s
     filesScanned: discovered.length,
     filesNew,
     filesUpdated,
+    messagesIndexed,
+    parseErrors,
+    elapsedMs: Date.now() - start,
+  };
+}
+
+// Counterpart to indexAll() for watermark-cursor sources (see
+// WatermarkSourceAdapter in types.ts): one source can hold many sessions and
+// rows update in place, so tracking is per-source-path (the `sources` table)
+// rather than per-file-per-session (the `files` table), and messages are
+// upserted by uuid rather than appended. IndexStats' filesScanned/filesNew/
+// filesUpdated fields are reused here for "sources" — same shape, no reason
+// for a parallel stats type.
+export function indexAllWatermark(
+  db: Database.Database,
+  adapter: WatermarkSourceAdapter,
+  roots: string[]
+): IndexStats {
+  const start = Date.now();
+  const discovered = adapter.discover(roots);
+
+  let sourcesNew = 0;
+  let sourcesUpdated = 0;
+  let messagesIndexed = 0;
+  let parseErrors = 0;
+
+  for (const sourcePath of discovered) {
+    const existing = getSourceCursor(db, sourcePath);
+    const existingCursor = existing?.kind === "watermark" ? { value: existing.value, tieBreakIds: existing.tieBreakIds } : undefined;
+
+    // A single corrupt, vanished, or lock-timed-out source must not abort the
+    // whole run — the Claude Code/Codex passes ahead of this one in cli.ts's
+    // runIndex already committed, and other sources in `discovered` still
+    // deserve a chance. Count it as a parse error and move on, leaving its
+    // cursor untouched (we don't know what, if anything, it actually scanned).
+    let result: { sessions: NormalizedSession[]; cursor: WatermarkCursorValue };
+    try {
+      result = adapter.parseSince(sourcePath, existingCursor);
+    } catch {
+      parseErrors++;
+      continue;
+    }
+    const { sessions, cursor } = result;
+
+    for (const session of sessions) {
+      upsertSessionMessages(db, session, { mode: "upsert" });
+      messagesIndexed += session.messages.length;
+      parseErrors += session.parseErrors;
+    }
+
+    // Persisted even when nothing was indexed this run: the cursor tracks
+    // everything parseSince scanned, not just what got upserted, so a
+    // no-op run doesn't leave the source stuck re-scanning the same rows.
+    upsertSourceCursor(db, sourcePath, adapter.id, {
+      kind: "watermark",
+      value: cursor.value,
+      tieBreakIds: cursor.tieBreakIds,
+    });
+    if (!existing) sourcesNew++;
+    else if (sessions.length > 0) sourcesUpdated++;
+  }
+
+  return {
+    filesScanned: discovered.length,
+    filesNew: sourcesNew,
+    filesUpdated: sourcesUpdated,
     messagesIndexed,
     parseErrors,
     elapsedMs: Date.now() - start,

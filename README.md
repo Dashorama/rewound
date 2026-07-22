@@ -10,7 +10,7 @@ Heavy users of coding agents accumulate gigabytes of session transcripts that ar
 - **History is perishable.** Claude Code deletes transcripts older than 30 days by default (`cleanupPeriodDays`, swept at startup) — your reasoning history evaporates.
 - **Agents can't remember.** Every new session rediscovers what a previous session already solved. Nobody serves the agent itself.
 
-rewound indexes every session transcript on your machine — Claude Code and OpenAI Codex CLI today, more harnesses next — into a local SQLite/FTS5 database and exposes it three ways: a CLI, an MCP server your agents can query directly, and a phone-friendly local web UI. Everything runs on your machine. Nothing leaves it.
+rewound indexes every session transcript on your machine — Claude Code, OpenAI Codex CLI, and OpenCode today, more harnesses next — into a local SQLite/FTS5 database and exposes it three ways: a CLI, an MCP server your agents can query directly, and a phone-friendly local web UI. Everything runs on your machine. Nothing leaves it.
 
 ## 60-second demo
 
@@ -66,7 +66,7 @@ node dist/cli.js index          # or: npm link, then `rewound index`
 
 </details>
 
-By default rewound reads `~/.claude/projects/**/*.jsonl` and Codex CLI sessions from `~/.codex/sessions` (read-only — it never modifies your transcripts) and writes its own database to `~/.rewound/rewound.db`. Override the DB path with `--db <path>` or `REWOUND_DB=<path>`.
+By default rewound reads `~/.claude/projects/**/*.jsonl`, Codex CLI sessions from `~/.codex/sessions`, and OpenCode's session database from `~/.local/share/opencode` (read-only — it never modifies your transcripts, and OpenCode's shared SQLite DB is opened strictly read-only even if OpenCode is writing to it concurrently) and writes its own database to `~/.rewound/rewound.db`. Override roots with `--roots` / `--codex-roots` / `--opencode-roots`, and the DB path with `--db <path>` or `REWOUND_DB=<path>`.
 
 ### Multi-machine: your history follows you
 
@@ -164,7 +164,7 @@ Server-rendered with zero frontend build step, colorblind-safe palette (blue/ora
 
 ## Roadmap
 
-More harness adapters are next: Copilot CLI and OpenCode transcripts are already mapped (see repo issues/roadmap). Keyword-first search is deliberate for v0.x — it's fast, local, and predictable. Local hybrid/semantic search (vector index built with a local embedding model, no API keys, fused with FTS ranking) is planned once the keyword surface has proven itself; the gap it closes is vocabulary mismatch ("that time the port was already taken" vs `EADDRINUSE`).
+More harness adapters are next: Copilot CLI is mapped (see repo issues/roadmap). Keyword-first search is deliberate for v0.x — it's fast, local, and predictable. Local hybrid/semantic search (vector index built with a local embedding model, no API keys, fused with FTS ranking) is planned once the keyword surface has proven itself; the gap it closes is vocabulary mismatch ("that time the port was already taken" vs `EADDRINUSE`).
 
 ## License
 

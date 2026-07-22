@@ -31,6 +31,7 @@ export interface SearchHit {
 // Every source harness has its own resume incantation; hits know their source.
 export function resumeCommand(source: string | undefined, sessionId: string): string {
   if (source === "codex") return `codex resume ${sessionId}`;
+  if (source === "opencode") return `opencode --session ${sessionId}`;
   return `claude --resume ${sessionId}`;
 }
 

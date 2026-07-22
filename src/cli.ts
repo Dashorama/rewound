@@ -16,7 +16,8 @@ import {
 } from "./db.js";
 import { ClaudeCodeAdapter } from "./adapters/claude-code.js";
 import { CodexAdapter } from "./adapters/codex.js";
-import { indexAll } from "./indexer.js";
+import { OpenCodeAdapter } from "./adapters/opencode.js";
+import { indexAll, indexAllWatermark } from "./indexer.js";
 import { search, collapseSnippetWhitespace, resumeCommand, type SearchOptions } from "./search.js";
 import { mergeDb, syncDir, sanitizeHostName } from "./sync.js";
 import { loadConfig, saveConfig } from "./config.js";
@@ -33,6 +34,7 @@ import { buildServer } from "./server.js";
 
 const DEFAULT_ROOTS = [path.join(os.homedir(), ".claude", "projects")];
 const DEFAULT_CODEX_ROOTS = [path.join(os.homedir(), ".codex", "sessions")];
+const DEFAULT_OPENCODE_ROOTS = [path.join(os.homedir(), ".local", "share", "opencode")];
 
 export function getVersion(): string {
   // ../package.json resolves correctly from both src/ (tests via tsx) and dist/.
@@ -62,6 +64,7 @@ export function parsePositiveInt(value: string): number {
 export interface IndexCliOptions {
   roots?: string[];
   codexRoots?: string[];
+  opencodeRoots?: string[];
   db?: string;
   json?: boolean;
 }
@@ -70,16 +73,19 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
   const db = openDb(resolveDbPath(opts.db));
   const claudeRoots = opts.roots && opts.roots.length > 0 ? opts.roots : DEFAULT_ROOTS;
   const codexRoots = opts.codexRoots && opts.codexRoots.length > 0 ? opts.codexRoots : DEFAULT_CODEX_ROOTS;
+  const opencodeRoots =
+    opts.opencodeRoots && opts.opencodeRoots.length > 0 ? opts.opencodeRoots : DEFAULT_OPENCODE_ROOTS;
   const a = indexAll(db, new ClaudeCodeAdapter(), claudeRoots);
   const b = indexAll(db, new CodexAdapter(), codexRoots);
+  const c = indexAllWatermark(db, new OpenCodeAdapter(), opencodeRoots);
   db.close();
   const stats = {
-    filesScanned: a.filesScanned + b.filesScanned,
-    filesNew: a.filesNew + b.filesNew,
-    filesUpdated: a.filesUpdated + b.filesUpdated,
-    messagesIndexed: a.messagesIndexed + b.messagesIndexed,
-    parseErrors: a.parseErrors + b.parseErrors,
-    elapsedMs: a.elapsedMs + b.elapsedMs,
+    filesScanned: a.filesScanned + b.filesScanned + c.filesScanned,
+    filesNew: a.filesNew + b.filesNew + c.filesNew,
+    filesUpdated: a.filesUpdated + b.filesUpdated + c.filesUpdated,
+    messagesIndexed: a.messagesIndexed + b.messagesIndexed + c.messagesIndexed,
+    parseErrors: a.parseErrors + b.parseErrors + c.parseErrors,
+    elapsedMs: a.elapsedMs + b.elapsedMs + c.elapsedMs,
   };
 
   if (opts.json) {
@@ -94,7 +100,8 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
     log("no transcript files found. roots scanned:");
     for (const r of claudeRoots) log(`  ${r}  (Claude Code)`);
     for (const r of codexRoots) log(`  ${r}  (Codex CLI)`);
-    log("transcripts elsewhere? point rewound at them with --roots / --codex-roots");
+    for (const r of opencodeRoots) log(`  ${r}  (OpenCode)`);
+    log("transcripts elsewhere? point rewound at them with --roots / --codex-roots / --opencode-roots");
   }
 }
 
@@ -370,9 +377,10 @@ export function buildProgram(): Command {
 
   program
     .command("index")
-    .description("scan agent transcripts (Claude Code + Codex CLI) into the local search index")
+    .description("scan agent transcripts (Claude Code + Codex CLI + OpenCode) into the local search index")
     .option("--roots <dirs...>", "Claude Code root directories to scan")
     .option("--codex-roots <dirs...>", "Codex CLI session roots (default: ~/.codex/sessions)")
+    .option("--opencode-roots <dirs...>", "OpenCode session DB roots (default: ~/.local/share/opencode)")
     .option("--db <path>", "database path")
     .option("--json", "output JSON")
     .action((opts) => runIndex(opts));

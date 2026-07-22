@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import Database from "better-sqlite3";
 import {
   getVersion,
   runIndex,
@@ -73,7 +74,7 @@ beforeEach(() => {
     ].join("\n") + "\n"
   );
 
-  runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], db: dbPath, json: true }, () => {});
+  runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], db: dbPath, json: true }, () => {});
 });
 
 afterEach(() => {
@@ -95,7 +96,7 @@ describe("highlightSnippet / stripSnippetMarkers", () => {
 describe("runIndex", () => {
   it("emits JSON with the expected shape", () => {
     const lines: string[] = [];
-    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], db: dbPath, json: true }, (s) => lines.push(s));
+    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], db: dbPath, json: true }, (s) => lines.push(s));
     const parsed = JSON.parse(lines[0]);
     expect(parsed).toMatchObject({
       filesScanned: expect.any(Number),
@@ -285,7 +286,7 @@ describe("first-run polish (v0.4.3)", () => {
     try {
       const lines: string[] = [];
       const emptyRoot = path.join(tmpDir, "nothing-here");
-      runIndex({ roots: [emptyRoot], codexRoots: [emptyRoot], db: path.join(tmpDir, "db.sqlite") }, (s) =>
+      runIndex({ roots: [emptyRoot], codexRoots: [emptyRoot], opencodeRoots: [emptyRoot], db: path.join(tmpDir, "db.sqlite") }, (s) =>
         lines.push(s)
       );
       const out = lines.join("\n");
@@ -302,7 +303,7 @@ describe("first-run polish (v0.4.3)", () => {
     try {
       const lines: string[] = [];
       runIndex(
-        { roots: [path.join(tmpDir, "x")], codexRoots: [path.join(tmpDir, "x")], db: path.join(tmpDir, "db.sqlite"), json: true },
+        { roots: [path.join(tmpDir, "x")], codexRoots: [path.join(tmpDir, "x")], opencodeRoots: [path.join(tmpDir, "x")], db: path.join(tmpDir, "db.sqlite"), json: true },
         (s) => lines.push(s)
       );
       expect(lines).toHaveLength(1);
@@ -444,7 +445,7 @@ describe("search output ergonomics (grouped hits, snippet cleanup)", () => {
         },
       }) + "\n"
     );
-    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], db: dbPath, json: true }, () => {});
+    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], db: dbPath, json: true }, () => {});
 
     const lines: string[] = [];
     runSearch("webhookretry", { db: dbPath }, (l) => lines.push(l));
@@ -494,7 +495,7 @@ describe("runMerge / runSync", () => {
         message: { role: "user", content: "remote machine session about kafka rebalance" },
       }) + "\n"
     );
-    runIndex({ roots: [path.join(tmpDir, "other-projects")], codexRoots: [path.join(tmpDir, "no-codex-here")], db: otherDbPath, json: true }, () => {});
+    runIndex({ roots: [path.join(tmpDir, "other-projects")], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], db: otherDbPath, json: true }, () => {});
 
     const lines: string[] = [];
     runMerge(otherDbPath, { db: dbPath }, (l) => lines.push(l));
@@ -565,7 +566,7 @@ describe("codex source: indexing + resume hint", () => {
     );
 
     const out: string[] = [];
-    runIndex({ roots: [tmpDir], codexRoots: [codexRoot], db: dbPath, json: true }, (l) => out.push(l));
+    runIndex({ roots: [tmpDir], codexRoots: [codexRoot], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], db: dbPath, json: true }, (l) => out.push(l));
     const stats = JSON.parse(out[0]);
     expect(stats.filesScanned).toBeGreaterThanOrEqual(2); // claude fixture + rollout
 
@@ -580,5 +581,62 @@ describe("codex source: indexing + resume hint", () => {
     const hits: string[] = [];
     runSearch("fts5 trigger", { db: dbPath }, (l) => hits.push(l));
     expect(hits.join("\n")).toContain("claude --resume sess-cli-1");
+  });
+});
+
+describe("opencode source: indexing + resume hint", () => {
+  it("indexes an opencode db alongside claude sessions; opencode hits get `opencode --session`", () => {
+    const opencodeRoot = path.join(tmpDir, "opencode-home");
+    fs.mkdirSync(opencodeRoot, { recursive: true });
+    const src = new Database(path.join(opencodeRoot, "opencode.db"));
+    src.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT,
+        slug TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL,
+        version TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+        time_archived INTEGER
+      );
+      CREATE TABLE message (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+        time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL
+      );
+      CREATE TABLE part (
+        id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL,
+        time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL
+      );
+    `);
+    src
+      .prepare(
+        `INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated)
+         VALUES ('ses_cli1', 'proj1', 'ses_cli1', '/home/dev/opencode-app', 'oc session', '0.1.0', 1000, 1000)`
+      )
+      .run();
+    src
+      .prepare(
+        `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`
+      )
+      .run("msg1", "ses_cli1", 1000, 1000, JSON.stringify({ role: "user" }));
+    src
+      .prepare(`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run("p1", "msg1", "ses_cli1", 1000, 1000, JSON.stringify({ type: "text", text: "the zanzibar gateway timeout mystery" }));
+    src.close();
+
+    const out: string[] = [];
+    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [opencodeRoot], db: dbPath, json: true }, (l) => out.push(l));
+    const stats = JSON.parse(out[0]);
+    expect(stats.filesScanned).toBeGreaterThanOrEqual(2); // claude fixture + opencode db
+    expect(stats.messagesIndexed).toBeGreaterThanOrEqual(1);
+
+    const hits: string[] = [];
+    runSearch("zanzibar gateway", { db: dbPath }, (l) => hits.push(l));
+    const text = hits.join("\n");
+    expect(text).toContain("opencode --session ses_cli1");
+    expect(text).not.toContain("claude --resume ses_cli1");
+  });
+
+  it("registers --opencode-roots on the index command", () => {
+    const program = buildProgram();
+    const indexCmd = program.commands.find((c) => c.name() === "index")!;
+    expect(indexCmd.options.some((o) => o.long === "--opencode-roots")).toBe(true);
   });
 });
