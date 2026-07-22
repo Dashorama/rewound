@@ -122,6 +122,14 @@ describe("OpenCodeAdapter.discover", () => {
   it("does not throw on a root that doesn't exist", () => {
     expect(new OpenCodeAdapter().discover([path.join(tmpDir, "nope")])).toEqual([]);
   });
+
+  it("bounds recursion depth so a pathologically deep tree cannot hang discovery (F7)", () => {
+    let dir = tmpDir;
+    for (let i = 0; i < 20; i++) dir = path.join(dir, `level${i}`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "opencode.db"), "");
+    expect(new OpenCodeAdapter().discover([tmpDir])).toEqual([]);
+  });
 });
 
 describe("OpenCodeAdapter.parseSince — full scan", () => {
@@ -251,6 +259,61 @@ describe("OpenCodeAdapter.parseSince — full scan", () => {
     expect(sessions[0].messages.map((m) => m.uuid)).toEqual(["msg2"]);
     expect(sessions[0].parseErrors).toBeGreaterThanOrEqual(1);
   });
+
+  it("surfaces a parse error even when the only touched message for a session is malformed (F6)", () => {
+    const { dbPath, db } = makeDb(tmpDir);
+    insertSession(db, { id: "ses1", directory: "/tmp", timeCreated: 1000, timeUpdated: 1000 });
+    db.prepare("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)").run(
+      "bad-msg",
+      "ses1",
+      1000,
+      1000,
+      "not valid json {"
+    );
+    db.close();
+
+    const { sessions } = new OpenCodeAdapter().parseSince(dbPath);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].id).toBe("ses1");
+    expect(sessions[0].messages).toEqual([]);
+    expect(sessions[0].parseErrors).toBeGreaterThanOrEqual(1);
+  });
+
+  it("picks up a session-only update (e.g. an async title write) even with no message/part activity in the window (F2)", () => {
+    const { dbPath, db } = makeDb(tmpDir);
+    insertSession(db, { id: "ses1", directory: "/tmp", title: "untitled", timeCreated: 1000, timeUpdated: 1000 });
+    insertMessage(db, { id: "msg1", sessionId: "ses1", role: "user", timeCreated: 1000, timeUpdated: 1000 });
+    insertPart(db, { id: "p1", messageId: "msg1", sessionId: "ses1", type: "text", text: "hi", timeCreated: 1000, timeUpdated: 1000 });
+
+    const adapter = new OpenCodeAdapter();
+    const first = adapter.parseSince(dbPath);
+    expect(first.sessions[0].title).toBe("untitled");
+
+    // Title arrives asynchronously later (real OpenCode behavior: AI-generated
+    // titles land after the session's last message), with no new message/part.
+    db.prepare("UPDATE session SET title = ?, time_updated = ? WHERE id = 'ses1'").run("AI-generated title", 9000);
+    db.close();
+
+    const second = adapter.parseSince(dbPath, first.cursor);
+    expect(second.sessions).toHaveLength(1);
+    expect(second.sessions[0].messages).toEqual([]);
+    expect(second.sessions[0].title).toBe("AI-generated title");
+  });
+
+  it("treats a restored/rolled-back source (whole-db max behind the persisted cursor) as a fresh full scan (F5)", () => {
+    const { dbPath, db } = makeDb(tmpDir);
+    insertSession(db, { id: "ses1", directory: "/tmp", timeCreated: 1000, timeUpdated: 1000 });
+    insertMessage(db, { id: "msg1", sessionId: "ses1", role: "user", timeCreated: 1000, timeUpdated: 1000 });
+    insertPart(db, { id: "p1", messageId: "msg1", sessionId: "ses1", type: "text", text: "hello", timeCreated: 1000, timeUpdated: 1000 });
+    db.close();
+
+    // A persisted cursor from before an older backup was restored over this
+    // db: the cursor is now ahead of anything the (rolled-back) db contains.
+    const staleCursor = { value: 99999, tieBreakIds: ["m:some-id-that-no-longer-exists"] };
+    const result = new OpenCodeAdapter().parseSince(dbPath, staleCursor);
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0].messages[0].uuid).toBe("msg1");
+  });
 });
 
 describe("OpenCodeAdapter.parseSince — incremental resume (watermark cursor)", () => {
@@ -305,6 +368,28 @@ describe("OpenCodeAdapter.parseSince — incremental resume (watermark cursor)",
     expect(second.sessions).toHaveLength(1);
     expect(second.sessions[0].messages[0].uuid).toBe("msg1");
     expect(second.cursor.value).toBe(5000);
+  });
+
+  it("does not skip a new part landing at the exact tied timestamp of a message already accounted for (F3, row-granular tie-break)", () => {
+    const { dbPath, db } = makeDb(tmpDir);
+    insertSession(db, { id: "ses1", directory: "/tmp", timeCreated: 1000, timeUpdated: 5000 });
+    insertMessage(db, { id: "msg1", sessionId: "ses1", role: "assistant", timeCreated: 1000, timeUpdated: 5000 });
+    insertPart(db, { id: "p1", messageId: "msg1", sessionId: "ses1", type: "text", text: "first", timeCreated: 1000, timeUpdated: 5000 });
+
+    const adapter = new OpenCodeAdapter();
+    const first = adapter.parseSince(dbPath);
+    expect(first.cursor.value).toBe(5000);
+
+    // A second part lands on the SAME message, tied at the exact same ms.
+    // Message-granular tie-breaking would treat msg1 as "already seen" (it's
+    // in tieBreakIds from run 1) and wrongly skip this — row-granular must
+    // catch it since p2's own row id was never scanned before.
+    insertPart(db, { id: "p2", messageId: "msg1", sessionId: "ses1", type: "text", text: "second", timeCreated: 1000, timeUpdated: 5000 });
+    db.close();
+
+    const second = adapter.parseSince(dbPath, first.cursor);
+    expect(second.sessions).toHaveLength(1);
+    expect(second.sessions[0].messages[0].text).toBe("first\n\nsecond");
   });
 
   it("does not permanently lose a distinct message that ties the exact cursor timestamp of one already seen", () => {
