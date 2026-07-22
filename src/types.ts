@@ -46,3 +46,24 @@ export interface SourceAdapter {
   discover(roots: string[]): string[]; // files it owns
   parse(filePath: string, fromByte?: number): NormalizedSession; // partial parse for incremental
 }
+
+// The resume token an adapter defines for its own source, persisted by the
+// indexer between runs. Two kinds exist: "byte-offsets" (SourceAdapter above —
+// one append-only file per session) and "watermark" (WatermarkSourceAdapter
+// below — one shared source holds many sessions and rows update in place, so
+// resume is a high-water mark on last-modified time instead of a byte count).
+export type SourceCursor =
+  | { kind: "byte-offsets"; value: number }
+  | { kind: "watermark"; value: number };
+
+// For sources where one file/DB is shared by many sessions and existing rows
+// are updated in place rather than only appended (e.g. OpenCode's SQLite DB).
+// Unlike SourceAdapter.parse, one call can return zero, one, or many sessions,
+// and a returned message may be a revision of one already indexed — the
+// indexer upserts by NormalizedMessage.uuid instead of blind-appending.
+export interface WatermarkSourceAdapter {
+  id: string;
+  cursorKind: "watermark";
+  discover(roots: string[]): string[]; // source paths it owns (e.g. a shared db file)
+  parseSince(sourcePath: string, cursor?: number): { sessions: NormalizedSession[]; cursor: number };
+}

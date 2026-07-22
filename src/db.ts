@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import type { NormalizedSession } from "./types.js";
+import type { NormalizedSession, SourceCursor } from "./types.js";
 import { estimateCostUsd } from "./pricing.js";
 
 const SCHEMA_SQL = `
@@ -40,15 +40,26 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, text, tool_text) VALUES('delete', old.id, old.text, old.tool_text);
   INSERT INTO messages_fts(rowid, text, tool_text) VALUES (new.id, new.text, new.tool_text);
 END;
+CREATE TABLE IF NOT EXISTS sources (
+  path TEXT PRIMARY KEY, adapter_id TEXT NOT NULL,
+  cursor_kind TEXT NOT NULL, cursor_value INTEGER NOT NULL
+);
 `;
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 // bm25 column weights: a match in prose (typed user text, assistant text) is
 // worth 3x a match in tool output. Tool dumps stay searchable — error strings
 // often exist ONLY there — they just stop outranking a human sentence.
 export const PROSE_BM25_WEIGHT = 3.0;
 export const TOOL_BM25_WEIGHT = 1.0;
+
+// v2 → v3: adds the `sources` table (per-source incremental cursor for
+// watermark-cursor adapters, e.g. OpenCode's shared SQLite DB — see
+// getSourceCursor/upsertSourceCursor below). Purely additive: CREATE TABLE IF
+// NOT EXISTS in SCHEMA_SQL already covers both fresh and existing v2 DBs, so
+// there is no migrateToV3 — bumping CURRENT_SCHEMA_VERSION alone is enough for
+// openDb's existing "version < CURRENT_SCHEMA_VERSION" branch to stamp it.
 
 // v1 (0.1.0) → v2: messages gains tool_text; FTS becomes two weighted columns.
 // Migrates IN PLACE from the content table — never by reparsing source files,
@@ -147,6 +158,33 @@ export function upsertFileRecord(db: Database.Database, rec: FileRecord): void {
   ).run(rec);
 }
 
+// Per-source cursor for watermark-cursor adapters (see WatermarkSourceAdapter
+// in types.ts) — analogous to the files table above, but keyed by source path
+// alone since one source holds many sessions, not one session per path.
+export function getSourceCursor(db: Database.Database, sourcePath: string): SourceCursor | undefined {
+  const row = db.prepare("SELECT cursor_kind, cursor_value FROM sources WHERE path = ?").get(sourcePath) as
+    | { cursor_kind: string; cursor_value: number }
+    | undefined;
+  if (!row) return undefined;
+  return { kind: row.cursor_kind as SourceCursor["kind"], value: row.cursor_value };
+}
+
+export function upsertSourceCursor(
+  db: Database.Database,
+  sourcePath: string,
+  adapterId: string,
+  cursor: SourceCursor
+): void {
+  db.prepare(
+    `INSERT INTO sources (path, adapter_id, cursor_kind, cursor_value)
+     VALUES (@path, @adapterId, @kind, @value)
+     ON CONFLICT(path) DO UPDATE SET
+       adapter_id = excluded.adapter_id,
+       cursor_kind = excluded.cursor_kind,
+       cursor_value = excluded.cursor_value`
+  ).run({ path: sourcePath, adapterId, kind: cursor.kind, value: cursor.value });
+}
+
 export function listTrackedFiles(db: Database.Database): Array<{ path: string; sessionId: string }> {
   const rows = db.prepare("SELECT path, session_id as sessionId FROM files").all() as Array<{
     path: string;
@@ -218,7 +256,7 @@ export function deleteSessionMessages(db: Database.Database, id: string): void {
 }
 
 export interface UpsertOptions {
-  mode: "replace" | "append";
+  mode: "replace" | "append" | "upsert";
 }
 
 export function upsertSessionMessages(
@@ -229,6 +267,13 @@ export function upsertSessionMessages(
   const tx = db.transaction(() => {
     if (opts.mode === "replace") {
       deleteSessionMessages(db, session.id);
+    } else if (opts.mode === "upsert") {
+      // Watermark-cursor sources re-emit a message when it changes in place
+      // (e.g. a new part streamed in), not only when a new one is created.
+      // Delete any prior row for the same uuid first so the FTS triggers see
+      // a delete+reinsert rather than a second row for the same message.
+      const deleteByUuid = db.prepare("DELETE FROM messages WHERE session_id = ? AND uuid = ?");
+      for (const m of session.messages) deleteByUuid.run(session.id, m.uuid);
     }
 
     const insertMessage = db.prepare(
@@ -249,7 +294,7 @@ export function upsertSessionMessages(
       });
     }
 
-    const existing = opts.mode === "append" ? getSession(db, session.id) : undefined;
+    const existing = opts.mode === "replace" ? undefined : getSession(db, session.id);
 
     // A fallback-derived projectDir (naive dash→slash dir-name decode) must never
     // clobber a stored value: incremental append chunks with no cwd-bearing lines
@@ -258,10 +303,8 @@ export function upsertSessionMessages(
     const projectDir =
       session.projectDirSource === "cwd" ? session.projectDir : existing?.projectDir ?? session.projectDir;
 
-    const modelsSeen = new Set(existing?.models ?? []);
     let costDelta = 0;
     for (const m of session.messages) {
-      if (m.model) modelsSeen.add(m.model);
       if (m.usage) costDelta += estimateCostUsd(m.model, m.usage);
     }
 
@@ -284,7 +327,12 @@ export function upsertSessionMessages(
       usageSums.cacheWrite += session.usageDelta.cacheWrite;
     }
 
-    const messageCount = (existing?.messageCount ?? 0) + session.messages.length;
+    // usageSums/costDelta stay additive even in upsert mode: watermark-cursor
+    // adapters (OpenCode) don't map per-message usage in v1, so this is always
+    // a zero delta for them. A future watermark adapter that DOES map usage
+    // would need the same ground-truth treatment as messageCount/models below —
+    // but usage isn't persisted per-message row, so there's nothing to recompute
+    // from; flagging here rather than solving for a case that doesn't exist yet.
     const inputTokens = (existing?.inputTokens ?? 0) + usageSums.input;
     const outputTokens = (existing?.outputTokens ?? 0) + usageSums.output;
     const cacheReadTokens = (existing?.cacheReadTokens ?? 0) + usageSums.cacheRead;
@@ -294,18 +342,45 @@ export function upsertSessionMessages(
 
     const title = session.title ?? existing?.title;
     const gitBranch = session.gitBranch ?? existing?.gitBranch;
-    const startedAt =
-      existing?.startedAt && session.startedAt
-        ? existing.startedAt < session.startedAt
-          ? existing.startedAt
-          : session.startedAt
-        : session.startedAt ?? existing?.startedAt;
-    const endedAt =
-      existing?.endedAt && session.endedAt
-        ? existing.endedAt > session.endedAt
-          ? existing.endedAt
-          : session.endedAt
-        : session.endedAt ?? existing?.endedAt;
+
+    // A message can REPLACE an already-indexed one under "upsert" (same uuid,
+    // revised content) rather than only ever being net-new, so message_count/
+    // models/started_at/ended_at are recomputed from the messages table itself
+    // (ground truth, post delete+reinsert) instead of adding this batch's size
+    // on top of the stored aggregate — the append-mode delta math below would
+    // silently double-count a replaced message.
+    let messageCount: number;
+    let models: Set<string>;
+    let startedAt: string | undefined;
+    let endedAt: string | undefined;
+    if (opts.mode === "upsert") {
+      const agg = db
+        .prepare("SELECT COUNT(*) as cnt, MIN(ts) as minTs, MAX(ts) as maxTs FROM messages WHERE session_id = ?")
+        .get(session.id) as { cnt: number; minTs: string | null; maxTs: string | null };
+      messageCount = agg.cnt;
+      startedAt = agg.minTs ?? undefined;
+      endedAt = agg.maxTs ?? undefined;
+      const modelRows = db
+        .prepare("SELECT DISTINCT model FROM messages WHERE session_id = ? AND model IS NOT NULL")
+        .all(session.id) as Array<{ model: string }>;
+      models = new Set(modelRows.map((r) => r.model));
+    } else {
+      messageCount = (existing?.messageCount ?? 0) + session.messages.length;
+      models = new Set(existing?.models ?? []);
+      for (const m of session.messages) if (m.model) models.add(m.model);
+      startedAt =
+        existing?.startedAt && session.startedAt
+          ? existing.startedAt < session.startedAt
+            ? existing.startedAt
+            : session.startedAt
+          : session.startedAt ?? existing?.startedAt;
+      endedAt =
+        existing?.endedAt && session.endedAt
+          ? existing.endedAt > session.endedAt
+            ? existing.endedAt
+            : session.endedAt
+          : session.endedAt ?? existing?.endedAt;
+    }
 
     db.prepare(
       `INSERT INTO sessions (
@@ -343,7 +418,7 @@ export function upsertSessionMessages(
       startedAt: startedAt ?? null,
       endedAt: endedAt ?? null,
       messageCount,
-      models: JSON.stringify(Array.from(modelsSeen)),
+      models: JSON.stringify(Array.from(models)),
       inputTokens,
       outputTokens,
       cacheReadTokens,
