@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import type Database from "better-sqlite3";
-import type { SourceAdapter, WatermarkSourceAdapter } from "./types.js";
+import type { NormalizedSession, SourceAdapter, WatermarkCursorValue, WatermarkSourceAdapter } from "./types.js";
 import {
   getFileRecord,
   upsertFileRecord,
@@ -163,7 +163,20 @@ export function indexAllWatermark(
   for (const sourcePath of discovered) {
     const existing = getSourceCursor(db, sourcePath);
     const existingCursor = existing?.kind === "watermark" ? { value: existing.value, tieBreakIds: existing.tieBreakIds } : undefined;
-    const { sessions, cursor } = adapter.parseSince(sourcePath, existingCursor);
+
+    // A single corrupt, vanished, or lock-timed-out source must not abort the
+    // whole run — the Claude Code/Codex passes ahead of this one in cli.ts's
+    // runIndex already committed, and other sources in `discovered` still
+    // deserve a chance. Count it as a parse error and move on, leaving its
+    // cursor untouched (we don't know what, if anything, it actually scanned).
+    let result: { sessions: NormalizedSession[]; cursor: WatermarkCursorValue };
+    try {
+      result = adapter.parseSince(sourcePath, existingCursor);
+    } catch {
+      parseErrors++;
+      continue;
+    }
+    const { sessions, cursor } = result;
 
     for (const session of sessions) {
       upsertSessionMessages(db, session, { mode: "upsert" });
