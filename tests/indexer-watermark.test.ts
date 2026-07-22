@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { openDb, getSession, getSourceCursor, getMessagesForSession } from "../src/db.js";
 import { OpenCodeAdapter } from "../src/adapters/opencode.js";
 import { indexAllWatermark } from "../src/indexer.js";
+import type { WatermarkSourceAdapter } from "../src/types.js";
 
 const SCHEMA_SQL = `
 CREATE TABLE session (
@@ -178,6 +179,35 @@ describe("indexAllWatermark", () => {
     expect(stats.filesNew).toBe(2);
     expect(getSession(db, "ses-a")).toBeDefined();
     expect(getSession(db, "ses-b")).toBeDefined();
+    db.close();
+  });
+
+  it("a source that throws (corrupt/vanished/locked db) counts as a parse error instead of aborting the run", () => {
+    const { db: src } = makeSourceDb(sourceDir);
+    insertSession(src, { id: "ses-good", directory: "/tmp/good", timeCreated: 1000, timeUpdated: 1000 });
+    insertMessage(src, { id: "msg-good", sessionId: "ses-good", role: "user", timeCreated: 1000, timeUpdated: 1000 });
+    insertTextPart(src, { id: "pg", messageId: "msg-good", sessionId: "ses-good", text: "good", timeCreated: 1000, timeUpdated: 1000 });
+    src.close();
+
+    const goodPath = path.join(sourceDir, "opencode.db");
+    const brokenPath = "/nonexistent/opencode.db";
+    const flaky: WatermarkSourceAdapter = {
+      id: "opencode",
+      cursorKind: "watermark",
+      discover: () => [goodPath, brokenPath],
+      parseSince: (sourcePath, cursor) => {
+        if (sourcePath === brokenPath) throw new Error("simulated: db vanished / corrupt / locked");
+        return adapter.parseSince(sourcePath, cursor);
+      },
+    };
+
+    const db = openDb(dbPath);
+    let stats: ReturnType<typeof indexAllWatermark> | undefined;
+    expect(() => {
+      stats = indexAllWatermark(db, flaky, [sourceDir]);
+    }).not.toThrow();
+    expect(stats!.parseErrors).toBeGreaterThanOrEqual(1);
+    expect(getSession(db, "ses-good")).toBeDefined();
     db.close();
   });
 });
