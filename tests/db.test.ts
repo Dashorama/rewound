@@ -18,6 +18,8 @@ import {
   listRecentProjects,
   getDailyMessageCounts,
   getMessagesForSession,
+  getSourceCursor,
+  upsertSourceCursor,
 } from "../src/db.js";
 import type { NormalizedSession } from "../src/types.js";
 
@@ -77,7 +79,7 @@ describe("db schema", () => {
       .all()
       .map((r: any) => r.name);
     expect(tables).toEqual(
-      expect.arrayContaining(["sessions", "files", "messages", "messages_fts"])
+      expect.arrayContaining(["sessions", "files", "messages", "messages_fts", "sources"])
     );
     // Re-opening the same path must not throw (IF NOT EXISTS).
     const db2 = openDb(dbPath);
@@ -358,7 +360,7 @@ describe("schema v2 migration (v1 → v2, in place, no reparse)", () => {
 
     const migrated = openDb(legacyPath);
     const version = migrated.pragma("user_version", { simple: true });
-    expect(version).toBe(2);
+    expect(version).toBe(3);
     const cols = migrated.prepare("PRAGMA table_info(messages)").all().map((c: any) => c.name);
     expect(cols).toContain("tool_text");
 
@@ -371,7 +373,7 @@ describe("schema v2 migration (v1 → v2, in place, no reparse)", () => {
   });
 
   it("stamps fresh databases with the current schema version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.pragma("user_version", { simple: true })).toBe(3);
   });
 });
 
@@ -541,5 +543,112 @@ describe("resolveDbPath (rename-safe resolution)", () => {
     fs.writeFileSync(path.join(home, ".rewound", "rewound.db"), "");
     expect(resolveDbPath(undefined, { home, env: {} })).toBe(path.join(home, ".rewound", "rewound.db"));
     fs.rmSync(home, { recursive: true, force: true });
+  });
+});
+
+describe("source cursor tracking (watermark-cursor adapters, e.g. OpenCode)", () => {
+  it("returns undefined for a source that has never been indexed", () => {
+    expect(getSourceCursor(db, "/home/dev/.local/share/opencode/opencode.db")).toBeUndefined();
+  });
+
+  it("round-trips a watermark cursor", () => {
+    upsertSourceCursor(db, "/x/opencode.db", "opencode", { kind: "watermark", value: 1234 });
+    expect(getSourceCursor(db, "/x/opencode.db")).toEqual({ kind: "watermark", value: 1234 });
+  });
+
+  it("upserting the same source path advances the cursor rather than duplicating the row", () => {
+    upsertSourceCursor(db, "/x/opencode.db", "opencode", { kind: "watermark", value: 10 });
+    upsertSourceCursor(db, "/x/opencode.db", "opencode", { kind: "watermark", value: 20 });
+    expect(getSourceCursor(db, "/x/opencode.db")).toEqual({ kind: "watermark", value: 20 });
+    const count = db.prepare("SELECT COUNT(*) as c FROM sources").get() as { c: number };
+    expect(count.c).toBe(1);
+  });
+});
+
+describe("upsertSessionMessages upsert mode (watermark-cursor sources update rows in place)", () => {
+  it("replaces a message with the same uuid instead of duplicating it", () => {
+    upsertSessionMessages(
+      db,
+      makeSession({
+        source: "opencode",
+        messages: [
+          { uuid: "m1", role: "assistant", ts: "2026-07-01T10:00:00.000Z", text: "draft answer", tools: [], isSidechain: false },
+        ],
+      }),
+      { mode: "upsert" }
+    );
+    upsertSessionMessages(
+      db,
+      makeSession({
+        source: "opencode",
+        messages: [
+          { uuid: "m1", role: "assistant", ts: "2026-07-01T10:00:00.000Z", text: "final answer, revised", tools: [], isSidechain: false },
+        ],
+      }),
+      { mode: "upsert" }
+    );
+
+    const count = db.prepare("SELECT COUNT(*) as c FROM messages WHERE session_id = ?").get("sess-1") as { c: number };
+    expect(count.c).toBe(1);
+    const row = db.prepare("SELECT text FROM messages WHERE session_id = ? AND uuid = ?").get("sess-1", "m1") as {
+      text: string;
+    };
+    expect(row.text).toBe("final answer, revised");
+  });
+
+  it("FTS reflects the revised content, not the stale copy (delete+reinsert, not a blind append)", () => {
+    upsertSessionMessages(
+      db,
+      makeSession({
+        messages: [{ uuid: "m1", role: "assistant", ts: "t", text: "draft answer about widgets", tools: [], isSidechain: false }],
+      }),
+      { mode: "upsert" }
+    );
+    upsertSessionMessages(
+      db,
+      makeSession({
+        messages: [{ uuid: "m1", role: "assistant", ts: "t", text: "final answer about gadgets", tools: [], isSidechain: false }],
+      }),
+      { mode: "upsert" }
+    );
+    expect(searchMessagesRaw(db, '"widgets"', {}).length).toBe(0);
+    expect(searchMessagesRaw(db, '"gadgets"', {}).length).toBe(1);
+  });
+
+  it("recomputes message_count from ground truth so a replaced message is never double-counted", () => {
+    upsertSessionMessages(
+      db,
+      makeSession({ messages: [{ uuid: "m1", role: "user", ts: "t1", text: "hi", tools: [], isSidechain: false }] }),
+      { mode: "upsert" }
+    );
+    upsertSessionMessages(
+      db,
+      makeSession({
+        messages: [
+          { uuid: "m1", role: "user", ts: "t1", text: "hi revised", tools: [], isSidechain: false },
+          { uuid: "m2", role: "assistant", ts: "t2", text: "hello", tools: [], isSidechain: false },
+        ],
+      }),
+      { mode: "upsert" }
+    );
+    const row = getSession(db, "sess-1")!;
+    expect(row.messageCount).toBe(2);
+    const count = db.prepare("SELECT COUNT(*) as c FROM messages WHERE session_id = ?").get("sess-1") as { c: number };
+    expect(count.c).toBe(2);
+  });
+
+  it("adds a genuinely new message (new uuid) alongside existing ones without touching them", () => {
+    upsertSessionMessages(
+      db,
+      makeSession({ messages: [{ uuid: "m1", role: "user", ts: "t1", text: "first", tools: [], isSidechain: false }] }),
+      { mode: "upsert" }
+    );
+    upsertSessionMessages(
+      db,
+      makeSession({ messages: [{ uuid: "m2", role: "assistant", ts: "t2", text: "second", tools: [], isSidechain: false }] }),
+      { mode: "upsert" }
+    );
+    const count = db.prepare("SELECT COUNT(*) as c FROM messages WHERE session_id = ?").get("sess-1") as { c: number };
+    expect(count.c).toBe(2);
   });
 });
