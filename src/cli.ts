@@ -85,6 +85,7 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
     filesUpdated: a.filesUpdated + b.filesUpdated + c.filesUpdated,
     messagesIndexed: a.messagesIndexed + b.messagesIndexed + c.messagesIndexed,
     parseErrors: a.parseErrors + b.parseErrors + c.parseErrors,
+    skippedFiles: [...a.skippedFiles, ...b.skippedFiles, ...c.skippedFiles],
     elapsedMs: a.elapsedMs + b.elapsedMs + c.elapsedMs,
   };
 
@@ -95,6 +96,10 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
   log(`files scanned: ${stats.filesScanned}  new: ${stats.filesNew}  updated: ${stats.filesUpdated}`);
   log(`messages indexed: ${stats.messagesIndexed}  parse errors: ${stats.parseErrors}`);
   log(`elapsed: ${stats.elapsedMs}ms`);
+  // A skipped file contributed nothing this run (#2) — name it, loudly, so a
+  // pathological transcript reads as "this file was skipped", never as
+  // "indexing is broken".
+  for (const skipped of stats.skippedFiles) log(`skipped (will retry next run): ${skipped}`);
   if (stats.filesScanned === 0) {
     log("");
     log("no transcript files found. roots scanned:");

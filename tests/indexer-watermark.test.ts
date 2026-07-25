@@ -188,7 +188,7 @@ describe("indexAllWatermark", () => {
     db.close();
   });
 
-  it("a source that throws (corrupt/vanished/locked db) counts as a parse error instead of aborting the run", () => {
+  it("a source that throws (corrupt/vanished/locked db) is reported as skipped instead of aborting the run", () => {
     const { db: src } = makeSourceDb(sourceDir);
     insertSession(src, { id: "ses-good", directory: "/tmp/good", timeCreated: 1000, timeUpdated: 1000 });
     insertMessage(src, { id: "msg-good", sessionId: "ses-good", role: "user", timeCreated: 1000, timeUpdated: 1000 });
@@ -212,7 +212,9 @@ describe("indexAllWatermark", () => {
     expect(() => {
       stats = indexAllWatermark(db, flaky, [sourceDir]);
     }).not.toThrow();
-    expect(stats!.parseErrors).toBeGreaterThanOrEqual(1);
+    expect(stats!.skippedFiles).toHaveLength(1);
+    expect(stats!.skippedFiles[0]).toContain(brokenPath);
+    expect(stats!.skippedFiles[0]).toContain("simulated");
     expect(getSession(db, "ses-good")).toBeDefined();
     db.close();
   });

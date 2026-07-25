@@ -18,6 +18,10 @@ export interface IndexStats {
   filesUpdated: number;
   messagesIndexed: number;
   parseErrors: number;
+  // Files whose entire indexing attempt threw ("path: message"). Distinct from
+  // parseErrors (malformed lines inside an otherwise-indexable file): a skip
+  // means the file contributed nothing this run and will be retried next run.
+  skippedFiles: string[];
   elapsedMs: number;
 }
 
@@ -115,8 +119,18 @@ export function indexAll(db: Database.Database, adapter: SourceAdapter, roots: s
   let messagesIndexed = 0;
   let parseErrors = 0;
 
+  const skippedFiles: string[] = [];
   for (const filePath of discovered) {
-    const result = indexOneFile(db, adapter, filePath);
+    // #2: one pathological file (oversized single line, unreadable, vanished
+    // mid-scan) must not abort the whole run. No file record is written for a
+    // skipped file, so a later run retries it instead of skipping forever.
+    let result: FileIndexResult;
+    try {
+      result = indexOneFile(db, adapter, filePath);
+    } catch (err) {
+      skippedFiles.push(`${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
     if (result.status === "new") filesNew++;
     else if (result.status === "updated") filesUpdated++;
     messagesIndexed += result.messagesIndexed;
@@ -136,6 +150,7 @@ export function indexAll(db: Database.Database, adapter: SourceAdapter, roots: s
     filesUpdated,
     messagesIndexed,
     parseErrors,
+    skippedFiles,
     elapsedMs: Date.now() - start,
   };
 }
@@ -159,6 +174,7 @@ export function indexAllWatermark(
   let sourcesUpdated = 0;
   let messagesIndexed = 0;
   let parseErrors = 0;
+  const skippedFiles: string[] = [];
 
   for (const sourcePath of discovered) {
     const existing = getSourceCursor(db, sourcePath);
@@ -167,13 +183,13 @@ export function indexAllWatermark(
     // A single corrupt, vanished, or lock-timed-out source must not abort the
     // whole run — the Claude Code/Codex passes ahead of this one in cli.ts's
     // runIndex already committed, and other sources in `discovered` still
-    // deserve a chance. Count it as a parse error and move on, leaving its
-    // cursor untouched (we don't know what, if anything, it actually scanned).
+    // deserve a chance. Report it as skipped and move on, leaving its cursor
+    // untouched (we don't know what, if anything, it actually scanned).
     let result: { sessions: NormalizedSession[]; cursor: WatermarkCursorValue };
     try {
       result = adapter.parseSince(sourcePath, existingCursor);
-    } catch {
-      parseErrors++;
+    } catch (err) {
+      skippedFiles.push(`${sourcePath}: ${err instanceof Error ? err.message : String(err)}`);
       continue;
     }
     const { sessions, cursor } = result;
@@ -202,6 +218,7 @@ export function indexAllWatermark(
     filesUpdated: sourcesUpdated,
     messagesIndexed,
     parseErrors,
+    skippedFiles,
     elapsedMs: Date.now() - start,
   };
 }

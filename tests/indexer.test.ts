@@ -257,4 +257,35 @@ describe("indexer", () => {
     const session = getSession(db, "s8")!;
     expect(session.messageCount).toBe(2);
   });
+
+  // #2: one pathological file (oversized, unreadable, vanished mid-scan) must
+  // not abort the whole run — before this, a single throwing parse() meant the
+  // index silently never advanced again.
+  it("a file whose parse throws is skipped and reported, and the rest of the run completes", () => {
+    const good1 = writeSessionFile("s9", [userLine("s9", "u1", "good one", "2026-07-01T10:00:00.000Z")]);
+    const bad = path.join(projectDir, "zz-bad.jsonl");
+    fs.writeFileSync(bad, userLine("sbad", "u1", "never parsed", "2026-07-01T10:00:00.000Z") + "\n");
+    const good2 = writeSessionFile("s9b", [userLine("s9b", "u1", "good two", "2026-07-01T10:00:00.000Z")]);
+
+    const throwing: SourceAdapter = {
+      id: "claude-code",
+      discover: () => [good1, bad, good2],
+      parse(filePath: string, fromByte?: number) {
+        if (filePath === bad) throw new Error("Cannot create a string longer than 0x1fffffe8 characters");
+        return adapter.parse(filePath, fromByte);
+      },
+    };
+
+    const stats = indexAll(db, throwing, [tmpDir]);
+    expect(stats.filesNew).toBe(2);
+    expect(getSession(db, "s9")!.messageCount).toBe(1);
+    expect(getSession(db, "s9b")!.messageCount).toBe(1);
+    expect(stats.skippedFiles).toHaveLength(1);
+    expect(stats.skippedFiles[0]).toContain("zz-bad.jsonl");
+    expect(stats.skippedFiles[0]).toContain("0x1fffffe8");
+
+    // No file record was written for the failed file, so a later run (e.g.
+    // after a fixed binary ships) retries it rather than skipping forever.
+    expect(getFileRecord(db, bad)).toBeUndefined();
+  });
 });
