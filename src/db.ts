@@ -265,6 +265,21 @@ export interface UpsertOptions {
   mode: "replace" | "append" | "upsert";
 }
 
+// Per-message cap on indexed tool output (#7): one giant tool_result (a cat of
+// a whole file, a grep dump) would otherwise be stored and FTS-indexed
+// verbatim, bloating the index and skewing term statistics. 6000 chars keeps
+// several screens of output searchable; prose (`text`) is never clamped — it
+// is the ranking signal. Applied at the insert path so every adapter, current
+// and future, is bounded uniformly. Message uuids are derived upstream of this
+// clamp, so identity is unaffected.
+const TOOL_TEXT_CHAR_BUDGET = 6000;
+const TOOL_TEXT_TRUNCATION_MARKER = "\n…[tool output truncated for index]";
+
+function clampToolText(toolText: string): string {
+  if (toolText.length <= TOOL_TEXT_CHAR_BUDGET) return toolText;
+  return toolText.slice(0, TOOL_TEXT_CHAR_BUDGET) + TOOL_TEXT_TRUNCATION_MARKER;
+}
+
 export function upsertSessionMessages(
   db: Database.Database,
   session: NormalizedSession,
@@ -293,7 +308,7 @@ export function upsertSessionMessages(
         role: m.role,
         ts: m.ts,
         text: m.text,
-        toolText: m.toolText ?? "",
+        toolText: clampToolText(m.toolText ?? ""),
         tools: JSON.stringify(m.tools ?? []),
         model: m.model ?? null,
         isSidechain: m.isSidechain ? 1 : 0,
