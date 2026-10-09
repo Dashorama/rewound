@@ -652,3 +652,47 @@ describe("upsertSessionMessages upsert mode (watermark-cursor sources update row
     expect(count.c).toBe(2);
   });
 });
+
+// #7: tool output is indexed verbatim with no size bound — a single giant
+// tool_result (a cat of a whole file, a grep dump) bloats the index and skews
+// FTS term statistics. One clamp at the insert path bounds every adapter.
+describe("toolText index budget", () => {
+  it("clamps stored and FTS-indexed toolText to the budget, keeping early content searchable", () => {
+    const early = "needle-alpha-early";
+    const late = "needle-omega-late";
+    const giant = early + " " + "x".repeat(200_000) + " " + late;
+    upsertSessionMessages(
+      db,
+      makeSession({
+        id: "sess-giant-tool",
+        messages: [
+          { uuid: "g1", role: "user", ts: "2026-10-09T10:00:00.000Z", text: "", toolText: giant, tools: [], isSidechain: false },
+        ],
+      }),
+      { mode: "replace" }
+    );
+
+    const [row] = getMessagesForSession(db, "sess-giant-tool") as Array<{ tool_text: string }>;
+    expect(row.tool_text.length).toBeLessThanOrEqual(6100); // budget + truncation marker
+    expect(row.tool_text).toContain("[tool output truncated");
+
+    expect(searchMessagesRaw(db, '"needle-alpha-early"', {}).length).toBe(1);
+    expect(searchMessagesRaw(db, '"needle-omega-late"', {}).length).toBe(0);
+  });
+
+  it("leaves prose text unclamped", () => {
+    const longProse = "prose ".repeat(3000); // 18k chars of human-typed text
+    upsertSessionMessages(
+      db,
+      makeSession({
+        id: "sess-long-prose",
+        messages: [
+          { uuid: "lp1", role: "user", ts: "2026-10-09T11:00:00.000Z", text: longProse, toolText: "", tools: [], isSidechain: false },
+        ],
+      }),
+      { mode: "replace" }
+    );
+    const [row] = getMessagesForSession(db, "sess-long-prose");
+    expect(row.text.length).toBe(longProse.length);
+  });
+});
