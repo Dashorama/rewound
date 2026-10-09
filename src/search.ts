@@ -29,9 +29,16 @@ export interface SearchHit {
 }
 
 // Every source harness has its own resume incantation; hits know their source.
-export function resumeCommand(source: string | undefined, sessionId: string): string {
+// Cursor is the one exception: its CLI (`cursor --help`, checked directly —
+// no --resume/--session/--composer flag exists) can only open a project
+// folder, not reopen a specific past chat, so this can only get the user to
+// the project and point them at Cursor's own chat history UI from there.
+export function resumeCommand(source: string | undefined, sessionId: string, projectDir?: string): string {
   if (source === "codex") return `codex resume ${sessionId}`;
   if (source === "opencode") return `opencode --session ${sessionId}`;
+  if (source === "cursor") {
+    return projectDir ? `cursor ${projectDir}  (then reopen this chat from Cursor's own history)` : "open this chat from Cursor's own history";
+  }
   return `claude --resume ${sessionId}`;
 }
 

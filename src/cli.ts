@@ -17,6 +17,7 @@ import {
 import { ClaudeCodeAdapter } from "./adapters/claude-code.js";
 import { CodexAdapter } from "./adapters/codex.js";
 import { OpenCodeAdapter } from "./adapters/opencode.js";
+import { CursorAdapter } from "./adapters/cursor.js";
 import { indexAll, indexAllWatermark } from "./indexer.js";
 import { search, collapseSnippetWhitespace, resumeCommand, type SearchOptions } from "./search.js";
 import { mergeDb, syncDir, sanitizeHostName } from "./sync.js";
@@ -30,11 +31,23 @@ import {
   writeCrontab,
 } from "./auto.js";
 import { startMcpServer } from "./mcp.js";
+import { analyzeCursorDrift, formatDriftReport } from "./doctor.js";
 import { buildServer } from "./server.js";
+import { pidFilePath, writeServeRecord, removeServeRecord, stopServer } from "./pidfile.js";
 
 const DEFAULT_ROOTS = [path.join(os.homedir(), ".claude", "projects")];
 const DEFAULT_CODEX_ROOTS = [path.join(os.homedir(), ".codex", "sessions")];
 const DEFAULT_OPENCODE_ROOTS = [path.join(os.homedir(), ".local", "share", "opencode")];
+// macOS path verified against a real install; Linux/Windows per Cursor's
+// documented Electron userData convention, not yet verified against a real
+// install on those platforms.
+const DEFAULT_CURSOR_ROOTS = [
+  process.platform === "darwin"
+    ? path.join(os.homedir(), "Library", "Application Support", "Cursor", "User")
+    : process.platform === "win32"
+      ? path.join(process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"), "Cursor", "User")
+      : path.join(os.homedir(), ".config", "Cursor", "User"),
+];
 
 export function getVersion(): string {
   // ../package.json resolves correctly from both src/ (tests via tsx) and dist/.
@@ -65,6 +78,7 @@ export interface IndexCliOptions {
   roots?: string[];
   codexRoots?: string[];
   opencodeRoots?: string[];
+  cursorRoots?: string[];
   db?: string;
   json?: boolean;
 }
@@ -75,18 +89,20 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
   const codexRoots = opts.codexRoots && opts.codexRoots.length > 0 ? opts.codexRoots : DEFAULT_CODEX_ROOTS;
   const opencodeRoots =
     opts.opencodeRoots && opts.opencodeRoots.length > 0 ? opts.opencodeRoots : DEFAULT_OPENCODE_ROOTS;
+  const cursorRoots = opts.cursorRoots && opts.cursorRoots.length > 0 ? opts.cursorRoots : DEFAULT_CURSOR_ROOTS;
   const a = indexAll(db, new ClaudeCodeAdapter(), claudeRoots);
   const b = indexAll(db, new CodexAdapter(), codexRoots);
   const c = indexAllWatermark(db, new OpenCodeAdapter(), opencodeRoots);
+  const d = indexAllWatermark(db, new CursorAdapter(), cursorRoots);
   db.close();
   const stats = {
-    filesScanned: a.filesScanned + b.filesScanned + c.filesScanned,
-    filesNew: a.filesNew + b.filesNew + c.filesNew,
-    filesUpdated: a.filesUpdated + b.filesUpdated + c.filesUpdated,
-    messagesIndexed: a.messagesIndexed + b.messagesIndexed + c.messagesIndexed,
-    parseErrors: a.parseErrors + b.parseErrors + c.parseErrors,
-    skippedFiles: [...a.skippedFiles, ...b.skippedFiles, ...c.skippedFiles],
-    elapsedMs: a.elapsedMs + b.elapsedMs + c.elapsedMs,
+    filesScanned: a.filesScanned + b.filesScanned + c.filesScanned + d.filesScanned,
+    filesNew: a.filesNew + b.filesNew + c.filesNew + d.filesNew,
+    filesUpdated: a.filesUpdated + b.filesUpdated + c.filesUpdated + d.filesUpdated,
+    messagesIndexed: a.messagesIndexed + b.messagesIndexed + c.messagesIndexed + d.messagesIndexed,
+    parseErrors: a.parseErrors + b.parseErrors + c.parseErrors + d.parseErrors,
+    skippedFiles: [...a.skippedFiles, ...b.skippedFiles, ...c.skippedFiles, ...d.skippedFiles],
+    elapsedMs: a.elapsedMs + b.elapsedMs + c.elapsedMs + d.elapsedMs,
   };
 
   if (opts.json) {
@@ -106,7 +122,8 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
     for (const r of claudeRoots) log(`  ${r}  (Claude Code)`);
     for (const r of codexRoots) log(`  ${r}  (Codex CLI)`);
     for (const r of opencodeRoots) log(`  ${r}  (OpenCode)`);
-    log("transcripts elsewhere? point rewound at them with --roots / --codex-roots / --opencode-roots");
+    for (const r of cursorRoots) log(`  ${r}  (Cursor)`);
+    log("transcripts elsewhere? point rewound at them with --roots / --codex-roots / --opencode-roots / --cursor-roots");
   }
 }
 
@@ -143,7 +160,7 @@ export function runSearch(query: string, opts: SearchCliOptions, log: Logger = d
       const extra = hit.matchesInSession - 1;
       log(`  (+${extra} more ${extra === 1 ? "match" : "matches"} in this session)`);
     }
-    log(`  ↳ resume: ${resumeCommand(hit.source, hit.sessionId)}`);
+    log(`  ↳ resume: ${resumeCommand(hit.source, hit.sessionId, hit.projectDir)}`);
     log("");
   }
   if (newestTs) {
@@ -263,8 +280,10 @@ export function runSessions(opts: SessionsCliOptions, log: Logger = defaultLog):
     return;
   }
   for (const r of rows) {
+    const heading = r.title ?? r.agentDescription ?? r.id;
+    const subagentTag = r.parentSessionId ? `  [subagent${r.agentType ? `:${r.agentType}` : ""} of ${r.parentSessionId}]` : "";
     log(
-      `${r.startedAt ?? "?"}  ${r.projectDir}  ${r.title ?? r.id}  msgs=${r.messageCount}  estApiCost=$${r.estCostUsd.toFixed(4)}`
+      `${r.startedAt ?? "?"}  ${r.projectDir}  ${heading}${subagentTag}  msgs=${r.messageCount}  estApiCost=$${r.estCostUsd.toFixed(4)}`
     );
   }
 }
@@ -295,6 +314,7 @@ export function runShow(idOrPrefix: string, opts: ShowCliOptions, log: Logger = 
           ts: m.ts,
           text: m.text,
           tools: parseJsonStringArray(m.tools),
+          toolText: m.tool_text || undefined,
           model: m.model ?? undefined,
           isSidechain: Boolean(m.is_sidechain),
         })),
@@ -306,9 +326,56 @@ export function runShow(idOrPrefix: string, opts: ShowCliOptions, log: Logger = 
   log(`# ${session.title ?? session.id}  (${session.projectDir}, ${session.gitBranch ?? "?"})`);
   for (const m of messages) {
     const tools = parseJsonStringArray(m.tools);
+    // Genuinely contentless turn (e.g. an extended-thinking block with no
+    // plaintext returned) — kept in storage (its usage feeds the session's
+    // cost estimate), just skipped here for readability. --json still
+    // returns every row untouched.
+    if (!m.text.trim() && tools.length === 0 && !m.tool_text) continue;
     const toolSummary = tools.map((t) => `[tool: ${t}]`).join(" ");
     const sidechain = m.is_sidechain ? " (sidechain)" : "";
     log(`[${m.ts}] ${m.role}${sidechain}: ${m.text}${toolSummary ? " " + toolSummary : ""}`);
+    if (m.tool_text) {
+      for (const line of m.tool_text.split("\n")) log(`    ${line}`);
+    }
+  }
+}
+
+export interface DoctorCliOptions {
+  cursorRoots?: string[];
+  json?: boolean;
+  minTextLength?: number;
+}
+
+// Schema-drift check. Every content gap found in the Cursor adapter so far
+// (codeBlocks, thinking, serviceStatusUpdate, errorDetails, tool-call
+// status, pre-_v inline conversations) was found by hand-auditing the raw
+// store — nothing would have flagged them, and sessions just quietly got
+// thinner. This reports fields the adapter doesn't read that carry real
+// text, judged by content rather than a name list, so it keeps working as
+// Cursor adds fields we've never heard of.
+export function runDoctor(opts: DoctorCliOptions, log: Logger = defaultLog): void {
+  const cursorRoots = opts.cursorRoots && opts.cursorRoots.length > 0 ? opts.cursorRoots : DEFAULT_CURSOR_ROOTS;
+  const dbPaths = new CursorAdapter().discover(cursorRoots);
+
+  if (dbPaths.length === 0) {
+    if (opts.json) {
+      log(JSON.stringify({ reports: [] }));
+      return;
+    }
+    log("no Cursor data found. roots scanned:");
+    for (const r of cursorRoots) log(`  ${r}`);
+    log("point rewound at it with --cursor-roots");
+    return;
+  }
+
+  const reports = dbPaths.map((p) => analyzeCursorDrift(p, { minTextLength: opts.minTextLength }));
+
+  if (opts.json) {
+    log(JSON.stringify({ reports }));
+    return;
+  }
+  for (const report of reports) {
+    for (const line of formatDriftReport(report)) log(line);
   }
 }
 
@@ -356,9 +423,12 @@ export function resolveServePort(port: number | undefined): number {
 }
 
 export async function runServe(opts: ServeCliOptions, log: Logger = defaultLog) {
-  const db = openDb(resolveDbPath(opts.db));
+  const dbPath = resolveDbPath(opts.db);
+  const db = openDb(dbPath);
   const app = buildServer({ db });
+  const pidFile = pidFilePath(dbPath);
   app.addHook("onClose", async () => {
+    removeServeRecord(pidFile);
     db.close();
   });
 
@@ -366,11 +436,48 @@ export async function runServe(opts: ServeCliOptions, log: Logger = defaultLog) 
   const host = opts.host ?? "127.0.0.1";
   const address = await app.listen({ port, host });
 
+  // Recorded only once listening succeeded, so a failed bind never leaves a
+  // record that `rewound stop` would report as a running server.
+  writeServeRecord(pidFile, {
+    pid: process.pid,
+    port: app.addresses()[0]?.port ?? port,
+    host,
+    startedAt: new Date().toISOString(),
+  });
+
   log(`rewound serve listening on ${address}`);
   if (host === "0.0.0.0") {
     log("bound to 0.0.0.0 (Tailscale/phone mode) — reachable from other devices on your network");
   }
   return app;
+}
+
+export interface StopCliOptions {
+  db?: string;
+  json?: boolean;
+}
+
+export async function runStop(opts: StopCliOptions, log: Logger = defaultLog): Promise<number> {
+  const dbPath = resolveDbPath(opts.db);
+  const result = await stopServer(pidFilePath(dbPath));
+
+  if (opts.json) {
+    log(JSON.stringify(result, null, 2));
+  } else if (result.status === "stopped") {
+    const how = result.forced ? " (forced with SIGKILL)" : "";
+    log(`stopped rewound serve on ${result.host}:${result.port} (pid ${result.pid})${how}`);
+  } else if (result.status === "stale") {
+    log(`no rewound serve running (cleaned up a stale record for pid ${result.pid})`);
+  } else if (result.status === "not-running") {
+    log("no rewound serve running");
+    // A server started before this release, or against a different --db, has no
+    // record here — point at the manual escape hatch rather than lying about it.
+    log("if one is still up, find it with: lsof -ti tcp:4321 | xargs kill");
+  } else {
+    log(`could not stop pid ${result.pid}: ${result.reason}`);
+  }
+
+  return result.status === "failed" ? 1 : 0;
 }
 
 export function buildProgram(): Command {
@@ -382,10 +489,11 @@ export function buildProgram(): Command {
 
   program
     .command("index")
-    .description("scan agent transcripts (Claude Code + Codex CLI + OpenCode) into the local search index")
+    .description("scan agent transcripts (Claude Code + Codex CLI + OpenCode + Cursor) into the local search index")
     .option("--roots <dirs...>", "Claude Code root directories to scan")
     .option("--codex-roots <dirs...>", "Codex CLI session roots (default: ~/.codex/sessions)")
     .option("--opencode-roots <dirs...>", "OpenCode session DB roots (default: ~/.local/share/opencode)")
+    .option("--cursor-roots <dirs...>", "Cursor \"User\" data roots (default: platform Cursor app-support dir)")
     .option("--db <path>", "database path")
     .option("--json", "output JSON")
     .action((opts) => runIndex(opts));
@@ -454,6 +562,14 @@ export function buildProgram(): Command {
     .action((opts) => runStats(opts));
 
   program
+    .command("doctor")
+    .description("check source transcripts for content fields this version doesn't index yet (schema drift)")
+    .option("--cursor-roots <dirs...>", "Cursor \"User\" data roots (default: platform Cursor app-support dir)")
+    .option("--min-text-length <n>", "how long a string must be to count as text", parsePositiveInt)
+    .option("--json", "output JSON")
+    .action((opts) => runDoctor(opts));
+
+  program
     .command("mcp")
     .description("start an MCP stdio server exposing search_history, get_session_summary, get_session_excerpt")
     .option("--db <path>", "database path")
@@ -466,7 +582,26 @@ export function buildProgram(): Command {
     .option("--host <host>", "host to bind (use 0.0.0.0 for Tailscale/phone access)", "127.0.0.1")
     .option("--db <path>", "database path")
     .action(async (opts) => {
-      await runServe(opts);
+      const app = await runServe(opts);
+      // Ctrl-C / `rewound stop` must run fastify's onClose so the pid record is
+      // removed; without this the process dies with a stale serve.pid behind it.
+      let closing = false;
+      for (const sig of ["SIGINT", "SIGTERM"] as const) {
+        process.once(sig, () => {
+          if (closing) return;
+          closing = true;
+          void app.close().then(() => process.exit(0));
+        });
+      }
+    });
+
+  program
+    .command("stop")
+    .description("stop the local web UI server started by `rewound serve`")
+    .option("--db <path>", "database path")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      process.exitCode = await runStop(opts);
     });
 
   return program;

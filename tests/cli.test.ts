@@ -16,11 +16,13 @@ import {
   buildProgram,
   isMainModule,
   runServe,
+  runStop,
   resolveServePort,
   highlightSnippet,
   stripSnippetMarkers,
   parsePositiveInt,
 } from "../src/cli.js";
+import { pidFilePath, readServeRecord, writeServeRecord } from "../src/pidfile.js";
 
 let tmpDir: string;
 let projectDir: string;
@@ -74,7 +76,7 @@ beforeEach(() => {
     ].join("\n") + "\n"
   );
 
-  runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], db: dbPath, json: true }, () => {});
+  runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], cursorRoots: [path.join(tmpDir, "no-cursor-here")], db: dbPath, json: true }, () => {});
 });
 
 afterEach(() => {
@@ -96,7 +98,7 @@ describe("highlightSnippet / stripSnippetMarkers", () => {
 describe("runIndex", () => {
   it("emits JSON with the expected shape", () => {
     const lines: string[] = [];
-    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], db: dbPath, json: true }, (s) => lines.push(s));
+    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], cursorRoots: [path.join(tmpDir, "no-cursor-here")], db: dbPath, json: true }, (s) => lines.push(s));
     const parsed = JSON.parse(lines[0]);
     expect(parsed).toMatchObject({
       filesScanned: expect.any(Number),
@@ -286,8 +288,9 @@ describe("first-run polish (v0.4.3)", () => {
     try {
       const lines: string[] = [];
       const emptyRoot = path.join(tmpDir, "nothing-here");
-      runIndex({ roots: [emptyRoot], codexRoots: [emptyRoot], opencodeRoots: [emptyRoot], db: path.join(tmpDir, "db.sqlite") }, (s) =>
-        lines.push(s)
+      runIndex(
+        { roots: [emptyRoot], codexRoots: [emptyRoot], opencodeRoots: [emptyRoot], cursorRoots: [emptyRoot], db: path.join(tmpDir, "db.sqlite") },
+        (s) => lines.push(s)
       );
       const out = lines.join("\n");
       expect(out).toContain("no transcript files found");
@@ -303,7 +306,14 @@ describe("first-run polish (v0.4.3)", () => {
     try {
       const lines: string[] = [];
       runIndex(
-        { roots: [path.join(tmpDir, "x")], codexRoots: [path.join(tmpDir, "x")], opencodeRoots: [path.join(tmpDir, "x")], db: path.join(tmpDir, "db.sqlite"), json: true },
+        {
+          roots: [path.join(tmpDir, "x")],
+          codexRoots: [path.join(tmpDir, "x")],
+          opencodeRoots: [path.join(tmpDir, "x")],
+          cursorRoots: [path.join(tmpDir, "x")],
+          db: path.join(tmpDir, "db.sqlite"),
+          json: true,
+        },
         (s) => lines.push(s)
       );
       expect(lines).toHaveLength(1);
@@ -410,6 +420,55 @@ describe("runServe", () => {
   });
 });
 
+describe("runServe / runStop pid record", () => {
+  it("records pid, host and the actually-bound port while serving, and clears it on close", async () => {
+    const app = await runServe({ port: 0, host: "127.0.0.1", db: dbPath }, () => {});
+    const pidFile = pidFilePath(dbPath);
+    try {
+      const rec = readServeRecord(pidFile);
+      expect(rec).not.toBeNull();
+      expect(rec!.pid).toBe(process.pid);
+      expect(rec!.host).toBe("127.0.0.1");
+      // port 0 means "any free port" — the record must hold the real one so
+      // `rewound stop` can report where the server actually was.
+      expect(rec!.port).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+    expect(readServeRecord(pidFile)).toBeNull();
+  });
+
+  it("runStop reports no running server, with a hint, when there is no record", async () => {
+    const lines: string[] = [];
+    const code = await runStop({ db: dbPath }, (l) => lines.push(l));
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("no rewound serve running");
+    expect(lines.join("\n")).toContain("lsof");
+  });
+
+  it("runStop cleans up a record whose process is long gone", async () => {
+    const pidFile = pidFilePath(dbPath);
+    // pid 2^31-1 is above every platform's pid_max, so it cannot be live.
+    writeServeRecord(pidFile, {
+      pid: 2147483647,
+      port: 4321,
+      host: "127.0.0.1",
+      startedAt: "2026-09-01T10:00:00.000Z",
+    });
+    const lines: string[] = [];
+    const code = await runStop({ db: dbPath }, (l) => lines.push(l));
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("stale");
+    expect(readServeRecord(pidFile)).toBeNull();
+  });
+
+  it("runStop --json emits the machine-readable result", async () => {
+    const lines: string[] = [];
+    await runStop({ db: dbPath, json: true }, (l) => lines.push(l));
+    expect(JSON.parse(lines.join("\n"))).toEqual({ status: "not-running" });
+  });
+});
+
 describe("search output ergonomics (grouped hits, snippet cleanup)", () => {
   it("groups same-session hits into one row with a +N more count", () => {
     const lines: string[] = [];
@@ -445,7 +504,7 @@ describe("search output ergonomics (grouped hits, snippet cleanup)", () => {
         },
       }) + "\n"
     );
-    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], db: dbPath, json: true }, () => {});
+    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], cursorRoots: [path.join(tmpDir, "no-cursor-here")], db: dbPath, json: true }, () => {});
 
     const lines: string[] = [];
     runSearch("webhookretry", { db: dbPath }, (l) => lines.push(l));
@@ -495,7 +554,17 @@ describe("runMerge / runSync", () => {
         message: { role: "user", content: "remote machine session about kafka rebalance" },
       }) + "\n"
     );
-    runIndex({ roots: [path.join(tmpDir, "other-projects")], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], db: otherDbPath, json: true }, () => {});
+    runIndex(
+      {
+        roots: [path.join(tmpDir, "other-projects")],
+        codexRoots: [path.join(tmpDir, "no-codex-here")],
+        opencodeRoots: [path.join(tmpDir, "no-opencode-here")],
+        cursorRoots: [path.join(tmpDir, "no-cursor-here")],
+        db: otherDbPath,
+        json: true,
+      },
+      () => {}
+    );
 
     const lines: string[] = [];
     runMerge(otherDbPath, { db: dbPath }, (l) => lines.push(l));
@@ -566,7 +635,17 @@ describe("codex source: indexing + resume hint", () => {
     );
 
     const out: string[] = [];
-    runIndex({ roots: [tmpDir], codexRoots: [codexRoot], opencodeRoots: [path.join(tmpDir, "no-opencode-here")], db: dbPath, json: true }, (l) => out.push(l));
+    runIndex(
+      {
+        roots: [tmpDir],
+        codexRoots: [codexRoot],
+        opencodeRoots: [path.join(tmpDir, "no-opencode-here")],
+        cursorRoots: [path.join(tmpDir, "no-cursor-here")],
+        db: dbPath,
+        json: true,
+      },
+      (l) => out.push(l)
+    );
     const stats = JSON.parse(out[0]);
     expect(stats.filesScanned).toBeGreaterThanOrEqual(2); // claude fixture + rollout
 
@@ -622,7 +701,17 @@ describe("opencode source: indexing + resume hint", () => {
     src.close();
 
     const out: string[] = [];
-    runIndex({ roots: [tmpDir], codexRoots: [path.join(tmpDir, "no-codex-here")], opencodeRoots: [opencodeRoot], db: dbPath, json: true }, (l) => out.push(l));
+    runIndex(
+      {
+        roots: [tmpDir],
+        codexRoots: [path.join(tmpDir, "no-codex-here")],
+        opencodeRoots: [opencodeRoot],
+        cursorRoots: [path.join(tmpDir, "no-cursor-here")],
+        db: dbPath,
+        json: true,
+      },
+      (l) => out.push(l)
+    );
     const stats = JSON.parse(out[0]);
     expect(stats.filesScanned).toBeGreaterThanOrEqual(2); // claude fixture + opencode db
     expect(stats.messagesIndexed).toBeGreaterThanOrEqual(1);

@@ -26,6 +26,13 @@ export interface NormalizedSession {
   gitBranch?: string;
   startedAt?: string;
   endedAt?: string;
+  // Set when this session IS a subagent transcript — the session that spawned
+  // it (Claude Code only, currently: derived from a sessionId mismatch inside
+  // the subagent's own transcript, see claude-code.ts). Absent = not a
+  // subagent, or the parent link isn't known for this source.
+  parentSessionId?: string;
+  agentType?: string; // e.g. "general-purpose" — from the subagent's sibling .meta.json, when present
+  agentDescription?: string; // the task description passed to the subagent, when present
   messages: NormalizedMessage[];
   // Session-level token usage for this parse chunk, for sources (Codex CLI)
   // that report usage in separate per-turn events rather than on messages.

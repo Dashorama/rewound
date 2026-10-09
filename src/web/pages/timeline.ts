@@ -6,6 +6,9 @@ export interface TimelineSession {
   startedAt?: string;
   estCostUsd: number;
   messageCount: number;
+  parentSessionId?: string;
+  agentType?: string;
+  agentDescription?: string;
 }
 
 export interface TimelinePageOptions {
@@ -29,11 +32,20 @@ function dayKey(startedAt: string | undefined): string {
 }
 
 function renderSessionRow(s: TimelineSession): string {
-  const heading = escapeHtml(s.title ?? s.id);
+  // Subagent sessions never get a title (no ai-title record) — the task
+  // description from the sibling .meta.json is a far better heading than
+  // the raw "agent-<id>" fallback.
+  const heading = escapeHtml(s.title ?? s.agentDescription ?? s.id);
+  const subagentBadge = s.parentSessionId
+    ? `<span class="badge accent">subagent${s.agentType ? `: ${escapeHtml(s.agentType)}` : ""}</span>`
+    : "";
+  const parentLink = s.parentSessionId
+    ? ` · <a href="/session/${encodeURIComponent(s.parentSessionId)}">parent session</a>`
+    : "";
   return `
 <article class="card session-row">
-  <div class="session-row-title"><a class="tap-target" href="/session/${encodeURIComponent(s.id)}">${heading}</a></div>
-  <div class="muted">${escapeHtml(s.startedAt ?? "?")} · <span class="count">${s.messageCount} msgs</span> · <span class="cost" title="Estimated cost at API list prices">$${s.estCostUsd.toFixed(4)}</span></div>
+  <div class="session-row-title"><a class="tap-target" href="/session/${encodeURIComponent(s.id)}">${heading}</a> ${subagentBadge}</div>
+  <div class="muted">${escapeHtml(s.startedAt ?? "?")} · <span class="count">${s.messageCount} msgs</span> · <span class="cost" title="Estimated cost at API list prices">$${s.estCostUsd.toFixed(4)}</span>${parentLink}</div>
 </article>`;
 }
 

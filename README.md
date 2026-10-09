@@ -119,7 +119,16 @@ rewound search <query> [--project <substr>] [--since <ISO|7d|24h>] [--role user|
 rewound sessions [--project <substr>] [--limit N] [--json]
 rewound show <session-id-or-prefix> [--json]
 rewound stats [--json]
+rewound doctor [--cursor-roots <dir...>] [--min-text-length N] [--json]
 ```
+
+`doctor` is a schema-drift check. Agent tools change their transcript formats
+without notice, and when a new field appears rewound doesn't quietly warn you —
+sessions just get thinner. It scans the raw store for fields this version
+doesn't index that nonetheless carry real text, and reports them with counts
+and an example, flagging any that are a message's *only* content. It judges by
+content rather than a list of known field names, so it keeps working on fields
+nobody has heard of yet. Currently covers Cursor, whose format moves most.
 
 `search` supports relative time windows (`--since 7d`), project filtering, and role filtering. Query terms are quoted automatically so punctuation never throws an FTS syntax error; pass `--raw` if you want real FTS5 query syntax.
 
@@ -150,7 +159,10 @@ Every response is capped near 8KB so agent context isn't blown out by a single t
 ```
 rewound serve                  # http://127.0.0.1:4321
 rewound serve --host 0.0.0.0   # reachable over Tailscale — search your history from your phone
+rewound stop                   # stop a server started earlier (SIGTERM, then SIGKILL)
 ```
+
+`serve` records its pid next to the database (`~/.rewound/serve.pid`), so `rewound stop` finds it again even from another terminal; Ctrl-C clears the record too.
 
 Server-rendered with zero frontend build step, colorblind-safe palette (blue/orange, no red/green status pairs), and everything — including clipboard copy — works over plain HTTP on your tailnet.
 

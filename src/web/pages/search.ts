@@ -89,7 +89,7 @@ function renderHero(opts: SearchPageOptions): string {
 function renderHitCard(hit: SearchPageHit, index: number): string {
   const heading = escapeHtml(hit.title ?? hit.sessionId);
   const sidechainBadge = hit.isSidechain ? `<span class="badge accent">subagent</span>` : "";
-  const resumeCmd = resumeCommand(hit.source, hit.sessionId);
+  const resumeCmd = resumeCommand(hit.source, hit.sessionId, hit.projectDir);
   const resumeId = `resume-hit-${index}`;
 
   return `

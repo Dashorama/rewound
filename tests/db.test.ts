@@ -20,6 +20,7 @@ import {
   getMessagesForSession,
   getSourceCursor,
   upsertSourceCursor,
+  CURRENT_SCHEMA_VERSION,
 } from "../src/db.js";
 import type { NormalizedSession } from "../src/types.js";
 
@@ -360,7 +361,7 @@ describe("schema v2 migration (v1 → v2, in place, no reparse)", () => {
 
     const migrated = openDb(legacyPath);
     const version = migrated.pragma("user_version", { simple: true });
-    expect(version).toBe(3);
+    expect(version).toBe(CURRENT_SCHEMA_VERSION);
     const cols = migrated.prepare("PRAGMA table_info(messages)").all().map((c: any) => c.name);
     expect(cols).toContain("tool_text");
 
@@ -373,7 +374,7 @@ describe("schema v2 migration (v1 → v2, in place, no reparse)", () => {
   });
 
   it("stamps fresh databases with the current schema version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(3);
+    expect(db.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
   });
 });
 

@@ -90,12 +90,15 @@ describe("ClaudeCodeAdapter", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("leaves toolText empty for plain string user content and for assistant messages", () => {
+  it("leaves toolText empty for plain string user content, but captures assistant tool_use input", () => {
     const session = adapter.parse(FIXTURE);
     const u1 = session.messages.find((m) => m.uuid === "u1")!;
     const a1 = session.messages.find((m) => m.uuid === "a1")!;
     expect(u1.toolText ?? "").toBe("");
-    expect(a1.toolText ?? "").toBe("");
+    // a1's tool_use block (Read, {file_path: "login.ts"}) has its input
+    // captured — this is the tool call's own arguments, not the result
+    // (which lands separately on the following tool_result message).
+    expect(a1.toolText).toBe('{"file_path":"login.ts"}');
     // assistant prose (text + thinking) stays in text
     expect(a1.text).toContain("Let me look at the login flow.");
   });

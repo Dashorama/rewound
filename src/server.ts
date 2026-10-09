@@ -173,6 +173,7 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
       ts: r.ts,
       text: r.text,
       tools: parseJsonStringArray(r.tools),
+      toolText: r.tool_text || undefined,
       model: r.model ?? undefined,
       isSidechain: Boolean(r.is_sidechain),
     }));
@@ -198,6 +199,9 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
         startedAt: s.startedAt,
         estCostUsd: s.estCostUsd,
         messageCount: s.messageCount,
+        parentSessionId: s.parentSessionId,
+        agentType: s.agentType,
+        agentDescription: s.agentDescription,
       })),
     });
 
