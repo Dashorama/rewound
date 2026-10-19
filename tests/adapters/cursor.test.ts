@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { CursorAdapter } from "../../src/adapters/cursor.js";
+import type { WatermarkCursorValue } from "../../src/types.js";
 
 // Matches the real schema, verified against a live, in-use Cursor install
 // (74,691 bubbles / 851 composers) — see
@@ -635,6 +636,38 @@ describe("CursorAdapter.parseSince — batching a large backfill", () => {
     const allIds = new Set([...first.sessions, ...second.sessions].map((s) => s.id));
     expect(allIds.has("tieA")).toBe(true);
     expect(allIds.has("tieB")).toBe(true);
+  });
+});
+
+describe("CursorAdapter.parseSince — tie plateau wider than the per-call cap", () => {
+  it("drains a 60-composer plateau sharing one recency instead of wedging", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    // The wedge case: more composers than MAX_COMPOSERS_PER_CALL all sharing
+    // ONE recency (a migration/import stamping a single timestamp). With a
+    // plain `recency >= ?` scan the second call deterministically re-fetches
+    // the same already-seen ties forever and everything newer is unreachable.
+    for (let i = 0; i < 60; i++) {
+      const id = `tie-${String(i).padStart(3, "0")}`;
+      insertComposerHeader(db, { composerId: id, recency: 1000, fsPath: "/proj" });
+      insertComposerData(db, { composerId: id, createdAt: 900, headers: [{ bubbleId: "b1", type: 1 }] });
+      insertBubble(db, { composerId: id, bubbleId: "b1", type: 1, text: `hello ${i}`, createdAt: 950 });
+    }
+    db.close();
+
+    const adapter = new CursorAdapter();
+    const seen = new Set<string>();
+    let cursor: WatermarkCursorValue | undefined;
+    let calls = 0;
+    let emptyStreak = 0;
+    while (emptyStreak < 2 && calls < 10) {
+      const res = adapter.parseSince(dbPath, cursor);
+      calls++;
+      for (const s of res.sessions) seen.add(s.id);
+      emptyStreak = res.sessions.length === 0 ? emptyStreak + 1 : 0;
+      cursor = res.cursor;
+    }
+    expect(seen.size).toBe(60);
+    expect(calls).toBeLessThanOrEqual(4); // 50 + 10 + two empty confirms
   });
 });
 

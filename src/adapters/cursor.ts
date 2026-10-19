@@ -462,19 +462,33 @@ export class CursorAdapter implements WatermarkSourceAdapter {
       const watermark = rolledBack ? 0 : persistedWatermark;
       const hdrTies = rolledBack ? new Set<string>() : prevHdrTies;
 
+      // Keyset pagination on (recency, composerId): the tie set alone can't
+      // page through a plateau of equal-recency rows wider than the per-call
+      // cap — a plain `recency >= ?` scan would re-fetch the same first batch
+      // of ties forever and never reach the rest of the plateau or anything
+      // newer. Resuming from (watermark, max already-seen tie id) makes every
+      // fetched row new by construction. composerIds are ASCII UUIDs, so JS
+      // and SQLite BINARY ordering agree.
+      const lastTieId = hdrTies.size > 0 ? [...hdrTies].sort().at(-1)! : "";
       const headerRows = hasHeaders
         ? (db
-            .prepare("SELECT composerId, recency, value FROM composerHeaders WHERE recency >= ? ORDER BY recency ASC LIMIT ?")
-            .all(watermark, MAX_COMPOSERS_PER_CALL) as ComposerHeaderRow[])
+            .prepare(
+              `SELECT composerId, recency, value FROM composerHeaders
+               WHERE recency > ? OR (recency = ? AND composerId > ?)
+               ORDER BY recency ASC, composerId ASC LIMIT ?`
+            )
+            .all(watermark, watermark, lastTieId, MAX_COMPOSERS_PER_CALL) as ComposerHeaderRow[])
         : [];
 
       let nextWatermark = watermark;
       for (const r of headerRows) if (r.recency > nextWatermark) nextWatermark = r.recency;
-      const nextHdrTies = new Set(headerRows.filter((r) => r.recency === nextWatermark).map((r) => r.composerId));
+      const batchTies = headerRows.filter((r) => r.recency === nextWatermark).map((r) => r.composerId);
+      // Watermark unchanged means we're still inside the same recency plateau:
+      // the already-seen ties stay relevant for the next page's keyset, so
+      // accumulate. Once it advances, only the new boundary's ties matter.
+      const nextHdrTies = nextWatermark === watermark ? new Set([...hdrTies, ...batchTies]) : new Set(batchTies);
 
-      const isNewHeaderRow = (r: ComposerHeaderRow) =>
-        r.recency > watermark || (r.recency === watermark && !hdrTies.has(r.composerId));
-      const touchedHeaderedIds = new Set(headerRows.filter(isNewHeaderRow).map((r) => r.composerId));
+      const touchedHeaderedIds = new Set(headerRows.map((r) => r.composerId));
 
       const headeredIds = hasHeaders
         ? new Set((db.prepare("SELECT composerId FROM composerHeaders").all() as { composerId: string }[]).map((r) => r.composerId))
