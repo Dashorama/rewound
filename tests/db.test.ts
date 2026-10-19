@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import {
+  migrateToV2,
   openDb,
   resolveDbPath,
   getFileRecord,
@@ -375,6 +376,49 @@ describe("schema v2 migration (v1 → v2, in place, no reparse)", () => {
 
   it("stamps fresh databases with the current schema version", () => {
     expect(db.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
+  });
+});
+
+describe("migration crash window (each migration stamps only its own version)", () => {
+  function makeV1Db(): { dir: string; dbPath: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentgrep-v1-crash-"));
+    const dbPath = path.join(dir, "legacy.db");
+    const legacy = new Database(dbPath);
+    legacy.exec(V1_SCHEMA_SQL);
+    legacy
+      .prepare(
+        `INSERT INTO sessions (id, source, project_dir, file_path, message_count)
+         VALUES ('old-sess', 'claude-code', '/home/dev/p', '/p/old-sess.jsonl', 0)`
+      )
+      .run();
+    legacy.close();
+    return { dir, dbPath };
+  }
+
+  it("migrateToV2 stamps user_version 2, not the current version", () => {
+    const { dir, dbPath } = makeV1Db();
+    const raw = new Database(dbPath);
+    migrateToV2(raw);
+    expect(raw.pragma("user_version", { simple: true })).toBe(2);
+    // v4's columns must NOT be implied by the v2 stamp — a crash right after
+    // migrateToV2 must leave a db that still reads as needing migrateToV4.
+    const cols = raw.prepare("PRAGMA table_info(sessions)").all().map((c: any) => c.name);
+    expect(cols).not.toContain("parent_session_id");
+    raw.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a db stranded between v2 and v4 is completed by openDb", () => {
+    const { dir, dbPath } = makeV1Db();
+    const raw = new Database(dbPath);
+    migrateToV2(raw);
+    raw.close(); // simulated crash: v2 done, v4 never ran
+
+    const reopened = openDb(dbPath);
+    expect(reopened.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => reopened.prepare("SELECT parent_session_id FROM sessions").all()).not.toThrow();
+    reopened.close();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 

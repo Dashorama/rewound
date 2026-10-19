@@ -88,7 +88,7 @@ function migrateToV4(db: Database.Database): void {
 // because archived sessions' transcripts may already be deleted. Legacy rows
 // keep their combined text in the prose column (they rank no worse than
 // before); newly indexed messages get the proper split.
-function migrateToV2(db: Database.Database): void {
+export function migrateToV2(db: Database.Database): void {
   const migrate = db.transaction(() => {
     db.exec(`
       ALTER TABLE messages ADD COLUMN tool_text TEXT NOT NULL DEFAULT '';
@@ -99,7 +99,11 @@ function migrateToV2(db: Database.Database): void {
     `);
     db.exec(SCHEMA_SQL);
     db.exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild');`);
-    db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+    // Stamp only the version THIS migration produces. Stamping
+    // CURRENT_SCHEMA_VERSION here would strand a db that crashes before a
+    // later migration (e.g. v4's ALTERs) claiming a version it never reached;
+    // openDb stamps the final version after all migrations have run.
+    db.pragma("user_version = 2");
   });
   migrate();
 }
