@@ -99,6 +99,16 @@ describe("looksLikeRewoundServe (pid-reuse guard)", () => {
   it("allows the kill when the command line cannot be read at all", () => {
     expect(looksLikeRewoundServe(1, () => null)).toBe(true);
   });
+
+  it("recognizes dev-mode servers run from TypeScript sources", () => {
+    expect(looksLikeRewoundServe(1, () => "tsx src/cli.ts serve --port 4819")).toBe(true);
+    expect(looksLikeRewoundServe(1, () => "node --import tsx /repo/src/cli.ts serve")).toBe(true);
+  });
+
+  it("still rejects unrelated commands that merely mention serve", () => {
+    expect(looksLikeRewoundServe(1, () => "python serve.py")).toBe(false);
+    expect(looksLikeRewoundServe(1, () => "vim serve.ts")).toBe(false);
+  });
 });
 
 describe("stopServer", () => {

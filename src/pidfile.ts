@@ -65,7 +65,20 @@ export function isProcessAlive(pid: number, kill: Killer = process.kill): boolea
 export type CommandReader = (pid: number) => string | null;
 
 const readCommand: CommandReader = (pid) => {
-  if (process.platform === "win32") return null; // no ps; skip the guard
+  if (process.platform === "win32") {
+    // No ps on Windows — CIM carries the full command line. Any failure
+    // (blocked PowerShell, old host) stays inconclusive, same as before.
+    try {
+      const out = execFileSync(
+        "powershell.exe",
+        ["-NoProfile", "-Command", `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+      ).trim();
+      return out || null;
+    } catch {
+      return null;
+    }
+  }
   try {
     return execFileSync("ps", ["-p", String(pid), "-o", "command="], {
       encoding: "utf8",
@@ -79,11 +92,13 @@ const readCommand: CommandReader = (pid) => {
 // Pids get recycled, and a stale serve.pid pointing at a since-reused pid would
 // make `rewound stop` kill an innocent process. Only proceed when the command
 // line still looks like a rewound server; an unreadable command line (no ps,
-// permission denied) is inconclusive and allowed through.
+// permission denied) is inconclusive and allowed through. cli.(js|ts) covers
+// dev-mode servers (`tsx src/cli.ts serve`), which previously read as stale
+// and had their record deleted while running.
 export function looksLikeRewoundServe(pid: number, reader: CommandReader = readCommand): boolean {
   const cmd = reader(pid);
   if (cmd === null || cmd === "") return true;
-  return /(rewound|\brw\b|cli\.js)/i.test(cmd) && /\bserve\b/.test(cmd);
+  return /(rewound|\brw\b|cli\.(js|ts))/i.test(cmd) && /\bserve\b/.test(cmd);
 }
 
 export type StopResult =
