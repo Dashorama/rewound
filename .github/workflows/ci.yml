@@ -1,0 +1,32 @@
+# PR / main CI: build + full test suite. Release gating stays in release.yml
+# (tag-triggered, with the npm@11 toolchain pin and the human approval gate);
+# this workflow exists so pull requests carry an automated check instead of
+# relying on whoever ran the suite locally.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 = engines floor, 22 = release.yml's toolchain, 26 = newest
+        # (better-sqlite3 12.x prebuilds — see #4/#6).
+        node-version: [20, 22, 26]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
