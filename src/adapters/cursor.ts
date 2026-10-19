@@ -431,7 +431,10 @@ export class CursorAdapter implements WatermarkSourceAdapter {
     return found;
   }
 
-  parseSince(dbPath: string, cursor?: WatermarkCursorValue): { sessions: NormalizedSession[]; cursor: WatermarkCursorValue } {
+  parseSince(
+    dbPath: string,
+    cursor?: WatermarkCursorValue
+  ): { sessions: NormalizedSession[]; cursor: WatermarkCursorValue; skipped?: string[] } {
     const persistedWatermark = cursor?.value ?? 0;
     // Two independent id namespaces packed into one tieBreakIds array: "hdr:"
     // entries are composerHeaders rows tied at the current watermark
@@ -446,9 +449,18 @@ export class CursorAdapter implements WatermarkSourceAdapter {
     // real activity, so this should be rare in practice.
     const prevHdrTies = new Set<string>();
     const prevLegacySeen = new Set<string>();
+    // "retry:"/"lretry:" entries are composers a previous run could NOT index
+    // (unresolvable project dir — workspace not reopened yet). They sit
+    // outside the watermark: it advances past them so the rest of the scan
+    // makes progress, and they're re-attempted every call (one KV get each)
+    // until they resolve or their composer row disappears.
+    const prevRetry = new Set<string>();
+    const prevLegacyRetry = new Set<string>();
     for (const id of cursor?.tieBreakIds ?? []) {
       if (id.startsWith("hdr:")) prevHdrTies.add(id.slice(4));
       else if (id.startsWith("legacy:")) prevLegacySeen.add(id.slice(7));
+      else if (id.startsWith("lretry:")) prevLegacyRetry.add(id.slice(7));
+      else if (id.startsWith("retry:")) prevRetry.add(id.slice(6));
     }
 
     const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 5000 });
@@ -507,22 +519,31 @@ export class CursorAdapter implements WatermarkSourceAdapter {
         const id = key.slice("composerData:".length);
         if (headeredIds.has(id)) continue; // covered by the headered path above
         if (prevLegacySeen.has(id)) continue; // already indexed once, treated as static
+        if (prevLegacyRetry.has(id)) continue; // re-attempted via the retry path below
         newLegacyIds.push(id);
-      }
-      const nextLegacySeen = new Set(prevLegacySeen);
-      for (const id of newLegacyIds) nextLegacySeen.add(id);
-
-      const nextCursor: WatermarkCursorValue = {
-        value: nextWatermark,
-        tieBreakIds: [...[...nextHdrTies].map((id) => `hdr:${id}`), ...[...nextLegacySeen].map((id) => `legacy:${id}`)],
-      };
-
-      const touchedIds = new Set<string>([...touchedHeaderedIds, ...newLegacyIds]);
-      if (touchedIds.size === 0) {
-        return { sessions: [], cursor: nextCursor };
       }
 
       const headerValueById = new Map(headerRows.map((r) => [r.composerId, r.value]));
+      // Retried headered composers are behind the watermark, so their header
+      // rows weren't in this batch — fetch each directly for its project dir.
+      if (prevRetry.size > 0) {
+        const getHeader = db.prepare("SELECT value FROM composerHeaders WHERE composerId = ?");
+        for (const id of prevRetry) {
+          const row = getHeader.get(id) as { value: string } | undefined;
+          if (row) headerValueById.set(id, row.value);
+        }
+      }
+
+      const legacyIds = new Set<string>([...newLegacyIds, ...prevLegacyRetry]);
+      const touchedIds = new Set<string>([...touchedHeaderedIds, ...prevRetry, ...legacyIds]);
+
+      // Outcomes gathered by the loop below; the cursor is assembled from
+      // them afterwards, so a composer that contributed nothing is never
+      // advanced past silently.
+      const nextRetry = new Set<string>();
+      const nextLegacyRetry = new Set<string>();
+      const legacySeenAdd: string[] = [];
+      const skipped: string[] = [];
       const workspaceStorageDir = path.join(path.dirname(path.dirname(dbPath)), "workspaceStorage");
       let legacyProjectDirMap: Map<string, string> | undefined;
 
@@ -532,12 +553,19 @@ export class CursorAdapter implements WatermarkSourceAdapter {
       const sessions: NormalizedSession[] = [];
       for (const composerId of touchedIds) {
         const composerRow = getComposerData.get(`composerData:${composerId}`) as { value: string } | undefined;
-        if (!composerRow) continue; // deleted between discover and parse
+        // Deleted between discover and parse (or before a retry resolved):
+        // permanently gone, so it leaves the retry sets and is advanced past.
+        if (!composerRow) continue;
 
         let composer: ComposerDataValue;
         try {
           composer = JSON.parse(composerRow.value);
         } catch {
+          // Corrupt composerData is permanent — surface it once instead of
+          // silently indexing thinner, then stop re-scanning it (legacy ids
+          // would otherwise be re-picked by every future run's key scan).
+          skipped.push(`cursor composer ${composerId}: malformed composerData JSON`);
+          if (legacyIds.has(composerId)) legacySeenAdd.push(composerId);
           continue;
         }
 
@@ -558,9 +586,14 @@ export class CursorAdapter implements WatermarkSourceAdapter {
         }
         // No directory-name-encodes-path convention here (composerId is a
         // bare UUID, unlike Claude Code's dash-decoded transcript dirnames),
-        // so an unresolved project dir has no further fallback — skip this
-        // composer rather than index it under a guessed/empty path.
-        if (!projectDir) continue;
+        // so an unresolved project dir has no further fallback. The condition
+        // is transient (the workspace may simply not have been reopened yet),
+        // so the composer goes on the retry list rather than being advanced
+        // past — indexing it under a guessed/empty path would be worse.
+        if (!projectDir) {
+          (legacyIds.has(composerId) ? nextLegacyRetry : nextRetry).add(composerId);
+          continue;
+        }
 
         const headers = composer.fullConversationHeadersOnly ?? [];
         // Pre-`_v` composers have no header list at all and keep their whole
@@ -622,9 +655,22 @@ export class CursorAdapter implements WatermarkSourceAdapter {
           parseErrors,
           bytesConsumed: 0, // unused: watermark-cursor sources resume via parseSince's returned cursor
         });
+        if (legacyIds.has(composerId)) legacySeenAdd.push(composerId);
       }
 
-      return { sessions, cursor: nextCursor };
+      const nextLegacySeen = new Set(prevLegacySeen);
+      for (const id of legacySeenAdd) nextLegacySeen.add(id);
+      const nextCursor: WatermarkCursorValue = {
+        value: nextWatermark,
+        tieBreakIds: [
+          ...[...nextHdrTies].map((id) => `hdr:${id}`),
+          ...[...nextRetry].map((id) => `retry:${id}`),
+          ...[...nextLegacyRetry].map((id) => `lretry:${id}`),
+          ...[...nextLegacySeen].map((id) => `legacy:${id}`),
+        ],
+      };
+
+      return skipped.length > 0 ? { sessions, cursor: nextCursor, skipped } : { sessions, cursor: nextCursor };
     } finally {
       db.close();
     }

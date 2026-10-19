@@ -671,6 +671,105 @@ describe("CursorAdapter.parseSince — tie plateau wider than the per-call cap",
   });
 });
 
+// A header row whose value JSON carries no workspaceIdentifier — the
+// "workspace not reopened yet" shape that leaves projectDir unresolvable
+// until the workspaceStorage fallback can map it.
+function insertHeaderNoWorkspace(db: Database.Database, h: { composerId: string; recency: number }): void {
+  db.prepare(
+    `INSERT INTO composerHeaders (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent, recency, checkpointAt, value)
+     VALUES (@composerId, 'ws1', @recency, @recency, 0, 0, @recency, @recency, @value)`
+  ).run({ composerId: h.composerId, recency: h.recency, value: JSON.stringify({ type: "head", composerId: h.composerId }) });
+}
+
+describe("CursorAdapter.parseSince — skip-then-advance", () => {
+  it("retries a headered composer whose project dir was unresolvable, instead of advancing past it forever", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerHeader(db, { composerId: "ok", recency: 100, fsPath: "/proj" });
+    insertComposerData(db, { composerId: "ok", createdAt: 90, headers: [{ bubbleId: "b1", type: 1 }] });
+    insertBubble(db, { composerId: "ok", bubbleId: "b1", type: 1, text: "fine", createdAt: 95 });
+    insertHeaderNoWorkspace(db, { composerId: "stuck", recency: 200 });
+    insertComposerData(db, { composerId: "stuck", createdAt: 190, headers: [{ bubbleId: "b1", type: 1 }] });
+    insertBubble(db, { composerId: "stuck", bubbleId: "b1", type: 1, text: "orphan until reopened", createdAt: 195 });
+    db.close();
+
+    const adapter = new CursorAdapter();
+    const first = adapter.parseSince(dbPath);
+    expect(first.sessions.map((s) => s.id)).toEqual(["ok"]);
+    expect(first.cursor.value).toBe(200); // the skip must NOT hold the watermark back
+    expect(first.cursor.tieBreakIds).toContain("retry:stuck");
+
+    // The workspace gets (re)opened: the fallback mapping now exists.
+    makeWorkspaceStorage(tmpDir, { hash: "h1", folder: "/late-proj", composerIds: ["stuck"] });
+    const second = adapter.parseSince(dbPath, first.cursor);
+    expect(second.sessions.map((s) => s.id)).toEqual(["stuck"]);
+    expect(second.sessions[0].projectDir).toBe("/late-proj");
+    expect(second.cursor.tieBreakIds).not.toContain("retry:stuck");
+  });
+
+  it("does not mark an unresolvable legacy composer as seen forever", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerData(db, { composerId: "leg", createdAt: 50, headers: [{ bubbleId: "b1", type: 1 }] });
+    insertBubble(db, { composerId: "leg", bubbleId: "b1", type: 1, text: "headerless", createdAt: 55 });
+    db.close();
+
+    const adapter = new CursorAdapter();
+    const first = adapter.parseSince(dbPath);
+    expect(first.sessions).toHaveLength(0);
+    expect(first.cursor.tieBreakIds).toContain("lretry:leg");
+    expect(first.cursor.tieBreakIds).not.toContain("legacy:leg");
+
+    makeWorkspaceStorage(tmpDir, { hash: "h1", folder: "/legacy-proj", composerIds: ["leg"] });
+    const second = adapter.parseSince(dbPath, first.cursor);
+    expect(second.sessions.map((s) => s.id)).toEqual(["leg"]);
+    expect(second.cursor.tieBreakIds).not.toContain("lretry:leg");
+    expect(second.cursor.tieBreakIds).toContain("legacy:leg");
+  });
+
+  it("drains a tie plateau even when one of its composers is unresolvable", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    for (let i = 0; i < 55; i++) {
+      const id = `p-${String(i).padStart(3, "0")}`;
+      if (i === 7) {
+        insertHeaderNoWorkspace(db, { composerId: id, recency: 1000 });
+      } else {
+        insertComposerHeader(db, { composerId: id, recency: 1000, fsPath: "/proj" });
+      }
+      insertComposerData(db, { composerId: id, createdAt: 900, headers: [{ bubbleId: "b1", type: 1 }] });
+      insertBubble(db, { composerId: id, bubbleId: "b1", type: 1, text: `msg ${i}`, createdAt: 950 });
+    }
+    db.close();
+
+    const adapter = new CursorAdapter();
+    const seen = new Set<string>();
+    let cursor: WatermarkCursorValue | undefined;
+    let emptyStreak = 0;
+    let calls = 0;
+    while (emptyStreak < 2 && calls < 10) {
+      const res = adapter.parseSince(dbPath, cursor);
+      calls++;
+      for (const s of res.sessions) seen.add(s.id);
+      emptyStreak = res.sessions.length === 0 ? emptyStreak + 1 : 0;
+      cursor = res.cursor;
+    }
+    expect(seen.size).toBe(54);
+    expect(cursor!.tieBreakIds).toContain("retry:p-007");
+  });
+
+  it("drops a retry entry whose composer no longer exists, without throwing", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerHeader(db, { composerId: "alive", recency: 300, fsPath: "/proj" });
+    insertComposerData(db, { composerId: "alive", createdAt: 290, headers: [{ bubbleId: "b1", type: 1 }] });
+    insertBubble(db, { composerId: "alive", bubbleId: "b1", type: 1, text: "still here", createdAt: 295 });
+    db.close();
+
+    const adapter = new CursorAdapter();
+    const res = adapter.parseSince(dbPath, { value: 0, tieBreakIds: ["retry:ghost", "lretry:lghost"] });
+    expect(res.sessions.map((s) => s.id)).toEqual(["alive"]);
+    expect(res.cursor.tieBreakIds).not.toContain("retry:ghost");
+    expect(res.cursor.tieBreakIds).not.toContain("lretry:lghost");
+  });
+});
+
 describe("CursorAdapter.parseSince — incremental resume", () => {
   it("returns nothing when nothing changed since the cursor", () => {
     const { dbPath, db } = makeGlobalDb(tmpDir);
