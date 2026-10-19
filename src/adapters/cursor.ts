@@ -312,13 +312,20 @@ function parseBubbleValue(
   };
 }
 
-function fileUriToPath(uri: string): string | undefined {
+export function fileUriToPath(uri: string): string | undefined {
   if (!uri.startsWith("file://")) return undefined;
+  let p: string;
   try {
-    return decodeURIComponent(uri.slice("file://".length));
+    p = decodeURIComponent(uri.slice("file://".length));
   } catch {
-    return uri.slice("file://".length);
+    p = uri.slice("file://".length);
   }
+  // Windows file URIs are file:///C:/Users/... (or %3A-encoded) — the path
+  // component keeps a leading slash that is not part of the real path, and
+  // leaving it produces "/C:/Users/..." projectDirs that split one project
+  // in two against the drive-lettered paths composerHeaders carries.
+  if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);
+  return p;
 }
 
 // composerHeaders.value is JSON with workspaceIdentifier.uri.fsPath — the
@@ -500,6 +507,13 @@ export class CursorAdapter implements WatermarkSourceAdapter {
       // keeps total touched composers per call bounded regardless of how the
       // two channels split.
       const legacyBudget = Math.max(0, MAX_COMPOSERS_PER_CALL - touchedHeaderedIds.size);
+      // Known v1-scale costs, deliberate: this key scan and the headeredIds
+      // fetch above run even on a no-op call (needed to notice brand-new
+      // headerless composers and to count backlog honestly — a count-equality
+      // fast path can mask a new legacy composer behind a deleted seen one),
+      // and tieBreakIds re-serializes every legacy id each run. Fine at the
+      // reference install's ~850 composers; revisit if either shows up in a
+      // profile.
       const allComposerKeys = db
         .prepare("SELECT key FROM cursorDiskKV WHERE key LIKE 'composerData:%' ORDER BY key ASC")
         .all() as { key: string }[];
@@ -681,8 +695,12 @@ export class CursorAdapter implements WatermarkSourceAdapter {
           }
           const msg = parseBubbleValue(d!, bubbleId, carryTs ?? composer.createdAt);
           if (typeof d!.createdAt === "number") carryTs = d!.createdAt;
+          if (!msg) {
+            parseErrors++; // an unrecognized type — same real error the headered path counts
+            continue;
+          }
           if (!keep(msg)) continue;
-          messages.push(msg!);
+          messages.push(msg);
         }
         messages.sort((a, b) => a.ts.localeCompare(b.ts));
 

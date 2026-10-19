@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { CursorAdapter } from "../../src/adapters/cursor.js";
+import { CursorAdapter, fileUriToPath } from "../../src/adapters/cursor.js";
 import type { WatermarkCursorValue } from "../../src/types.js";
 
 // Matches the real schema, verified against a live, in-use Cursor install
@@ -767,6 +767,59 @@ describe("CursorAdapter.parseSince — skip-then-advance", () => {
     expect(res.sessions.map((s) => s.id)).toEqual(["alive"]);
     expect(res.cursor.tieBreakIds).not.toContain("retry:ghost");
     expect(res.cursor.tieBreakIds).not.toContain("lretry:lghost");
+  });
+});
+
+describe("fileUriToPath", () => {
+  it("strips the win32 leading slash before a drive letter", () => {
+    expect(fileUriToPath("file:///C%3A/Users/x")).toBe("C:/Users/x");
+    expect(fileUriToPath("file:///C:/Users/x")).toBe("C:/Users/x");
+  });
+
+  it("leaves posix paths untouched", () => {
+    expect(fileUriToPath("file:///home/x")).toBe("/home/x");
+  });
+});
+
+describe("CursorAdapter.parseSince — legacy parse-error accounting", () => {
+  it("counts a malformed inline legacy bubble as a parse error, same as the headered path", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(
+      "composerData:leg",
+      JSON.stringify({
+        composerId: "leg",
+        createdAt: 100,
+        conversation: [
+          { type: 7, text: "unrecognized bubble type with real text" },
+          { type: 1, text: "fine" },
+        ],
+      })
+    );
+    db.close();
+    makeWorkspaceStorage(tmpDir, { hash: "h1", folder: "/p", composerIds: ["leg"] });
+
+    const res = new CursorAdapter().parseSince(dbPath);
+    expect(res.sessions).toHaveLength(1);
+    expect(res.sessions[0].parseErrors).toBe(1);
+    expect(res.sessions[0].messages.map((m) => m.text)).toEqual(["fine"]);
+  });
+});
+
+describe("CursorAdapter.parseSince — true no-op second run", () => {
+  it("returns an unchanged cursor, zero sessions, zero backlog", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerHeader(db, { composerId: "c1", recency: 100, fsPath: "/proj" });
+    insertComposerData(db, { composerId: "c1", createdAt: 90, headers: [{ bubbleId: "b1", type: 1 }] });
+    insertBubble(db, { composerId: "c1", bubbleId: "b1", type: 1, text: "only", createdAt: 95 });
+    db.close();
+
+    const adapter = new CursorAdapter();
+    const first = adapter.parseSince(dbPath);
+    const second = adapter.parseSince(dbPath, first.cursor);
+    expect(second.sessions).toHaveLength(0);
+    expect(second.backlogRemaining).toBe(0);
+    expect(second.cursor.value).toBe(first.cursor.value);
+    expect([...second.cursor.tieBreakIds].sort()).toEqual([...first.cursor.tieBreakIds].sort());
   });
 });
 
