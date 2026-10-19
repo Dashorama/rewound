@@ -33,13 +33,23 @@ export interface SearchHit {
 // no --resume/--session/--composer flag exists) can only open a project
 // folder, not reopen a specific past chat, so this can only get the user to
 // the project and point them at Cursor's own chat history UI from there.
-export function resumeCommand(source: string | undefined, sessionId: string, projectDir?: string): string {
-  if (source === "codex") return `codex resume ${sessionId}`;
-  if (source === "opencode") return `opencode --session ${sessionId}`;
+//
+// `command` must be executable verbatim (it feeds copy buttons and the CLI's
+// copyable line), so any guidance prose lives in `hint`, outside it.
+export interface ResumeCommand {
+  command: string;
+  hint?: string;
+}
+
+export function resumeCommand(source: string | undefined, sessionId: string, projectDir?: string): ResumeCommand {
+  if (source === "codex") return { command: `codex resume ${sessionId}` };
+  if (source === "opencode") return { command: `opencode --session ${sessionId}` };
   if (source === "cursor") {
-    return projectDir ? `cursor ${projectDir}  (then reopen this chat from Cursor's own history)` : "open this chat from Cursor's own history";
+    return projectDir
+      ? { command: `cursor "${projectDir}"`, hint: "then reopen this chat from Cursor's own history" }
+      : { command: "", hint: "open this chat from Cursor's own history" };
   }
-  return `claude --resume ${sessionId}`;
+  return { command: `claude --resume ${sessionId}` };
 }
 
 // Snippets lifted from code/tool dumps carry embedded newlines, tabs and

@@ -95,7 +95,12 @@ export function renderSessionPage(
   const parentRow = session.parentSessionId
     ? `<div class="muted">spawned by <a href="/session/${encodeURIComponent(session.parentSessionId)}">${escapeHtml(session.parentSessionId)}</a></div>`
     : "";
-  const resumeCmd = resumeCommand(session.source, session.id, session.projectDir);
+  const resume = resumeCommand(session.source, session.id, session.projectDir);
+  const resumeHtml = [
+    resume.command ? `<code id="resume-cmd">${escapeHtml(resume.command)}</code>` : "",
+    resume.command ? `<button type="button" class="copy-btn" data-copy-target="resume-cmd">Copy</button>` : "",
+    resume.hint ? `<span class="muted">${escapeHtml(resume.hint)}</span>` : "",
+  ].join("\n    ");
 
   const header = `
 <header class="session-header">
@@ -108,8 +113,7 @@ export function renderSessionPage(
   </div>
   ${parentRow}
   <p class="resume-row">
-    <code id="resume-cmd">${escapeHtml(resumeCmd)}</code>
-    <button type="button" class="copy-btn" data-copy-target="resume-cmd">Copy</button>
+    ${resumeHtml}
   </p>
 </header>`;
 

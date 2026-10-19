@@ -89,8 +89,15 @@ function renderHero(opts: SearchPageOptions): string {
 function renderHitCard(hit: SearchPageHit, index: number): string {
   const heading = escapeHtml(hit.title ?? hit.sessionId);
   const sidechainBadge = hit.isSidechain ? `<span class="badge accent">subagent</span>` : "";
-  const resumeCmd = resumeCommand(hit.source, hit.sessionId, hit.projectDir);
+  const resume = resumeCommand(hit.source, hit.sessionId, hit.projectDir);
   const resumeId = `resume-hit-${index}`;
+  // Only an executable command gets a <code> block and a Copy button; a
+  // hint is display-only guidance.
+  const resumeHtml = [
+    resume.command ? `<code id="${resumeId}">${escapeHtml(resume.command)}</code>` : "",
+    resume.command ? `<button type="button" class="copy-btn" data-copy-target="${resumeId}">Copy</button>` : "",
+    resume.hint ? `<span class="muted">${escapeHtml(resume.hint)}</span>` : "",
+  ].join("\n    ");
 
   return `
 <article class="card hit-card">
@@ -105,8 +112,7 @@ function renderHitCard(hit: SearchPageHit, index: number): string {
   ${hit.matchesInSession > 1 ? `<p class="muted">+${hit.matchesInSession - 1} more in this session</p>` : ""}
   <div class="hit-footer">
     <span class="cost muted" title="Estimated cost at API list prices">$${hit.estCostUsd.toFixed(4)}</span>
-    <code id="${resumeId}">${escapeHtml(resumeCmd)}</code>
-    <button type="button" class="copy-btn" data-copy-target="${resumeId}">Copy</button>
+    ${resumeHtml}
   </div>
 </article>`;
 }

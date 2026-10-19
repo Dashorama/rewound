@@ -166,7 +166,10 @@ export function runSearch(query: string, opts: SearchCliOptions, log: Logger = d
       const extra = hit.matchesInSession - 1;
       log(`  (+${extra} more ${extra === 1 ? "match" : "matches"} in this session)`);
     }
-    log(`  ↳ resume: ${resumeCommand(hit.source, hit.sessionId, hit.projectDir)}`);
+    const resume = resumeCommand(hit.source, hit.sessionId, hit.projectDir);
+    // The command stays copy-paste clean; any guidance rides outside it.
+    if (resume.command) log(`  ↳ resume: ${resume.command}${resume.hint ? `   (${resume.hint})` : ""}`);
+    else if (resume.hint) log(`  ↳ resume: ${resume.hint}`);
     log("");
   }
   if (newestTs) {
