@@ -5,6 +5,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import {
   migrateToV2,
+  migrateToV4,
   openDb,
   resolveDbPath,
   getFileRecord,
@@ -405,6 +406,42 @@ describe("migration crash window (each migration stamps only its own version)", 
     const cols = raw.prepare("PRAGMA table_info(sessions)").all().map((c: any) => c.name);
     expect(cols).not.toContain("parent_session_id");
     raw.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("migrateToV4 stamps its own version inside its transaction", () => {
+    const { dir, dbPath } = makeV1Db();
+    const raw = new Database(dbPath);
+    migrateToV2(raw);
+    migrateToV4(raw);
+    // A crash right after migrateToV4 must never strand a db whose columns
+    // exist but whose version says they don't — the re-run would then die on
+    // "duplicate column name" and brick openDb entirely.
+    expect(raw.pragma("user_version", { simple: true })).toBe(4);
+    raw.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a db stranded with v4 columns but a v2 stamp (older-build crash) opens cleanly", () => {
+    const { dir, dbPath } = makeV1Db();
+    const raw = new Database(dbPath);
+    migrateToV2(raw);
+    // Reproduce the stranded state an older build's crash left behind:
+    // v4's ALTERs committed, final version stamp never ran.
+    raw.exec(`
+      ALTER TABLE sessions ADD COLUMN parent_session_id TEXT;
+      ALTER TABLE sessions ADD COLUMN agent_type TEXT;
+      ALTER TABLE sessions ADD COLUMN agent_description TEXT;
+    `);
+    raw.close();
+
+    let reopened!: ReturnType<typeof openDb>;
+    expect(() => {
+      reopened = openDb(dbPath);
+    }).not.toThrow();
+    expect(reopened.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
+    expect(() => reopened.prepare("SELECT parent_session_id FROM sessions").all()).not.toThrow();
+    reopened.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 

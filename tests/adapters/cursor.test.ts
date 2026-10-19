@@ -889,6 +889,21 @@ describe("CursorAdapter.parseSince — bubble timestamp fallback", () => {
     expect(session.messages[0].ts).toBe(new Date(7777).toISOString());
   });
 
+  it("a HEADERED composer whose conversation is inline still gets the header timestamp, not epoch 0", () => {
+    // A pre-`_v` composer that later gained a header row: no
+    // fullConversationHeadersOnly, conversation inline, nothing timestamped.
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerHeader(db, { composerId: "c1", recency: 7777, fsPath: "/proj" });
+    db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(
+      "composerData:c1",
+      JSON.stringify({ composerId: "c1", conversation: [{ type: 1, text: "old but headered" }] })
+    );
+    db.close();
+    const res = new CursorAdapter().parseSince(dbPath);
+    expect(res.sessions).toHaveLength(1);
+    expect(res.sessions[0].messages[0].ts).toBe(new Date(7777).toISOString());
+  });
+
   it("legacy composer with no timestamps anywhere still parses (documented epoch-0 last resort)", () => {
     const { dbPath, db } = makeGlobalDb(tmpDir);
     db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(
@@ -913,6 +928,34 @@ describe("CursorAdapter.parseSince — bubble timestamp fallback", () => {
     expect(res.sessions).toHaveLength(1);
     expect(res.sessions[0].parseErrors).toBe(1);
     expect(res.sessions[0].messages.map((m) => m.uuid)).toEqual(["bok"]);
+  });
+});
+
+describe("CursorAdapter.parseSince — late-committed equal-recency tie", () => {
+  it("indexes a tie that commits at the watermark recency with a composerId below the keyset", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerHeader(db, { composerId: "mmm", recency: 1000, fsPath: "/proj" });
+    insertComposerData(db, { composerId: "mmm", createdAt: 900, headers: [{ bubbleId: "b1", type: 1 }] });
+    insertBubble(db, { composerId: "mmm", bubbleId: "b1", type: 1, text: "first commit of the burst", createdAt: 950 });
+    db.close();
+
+    const adapter = new CursorAdapter();
+    const first = adapter.parseSince(dbPath);
+    expect(first.sessions.map((s) => s.id)).toEqual(["mmm"]);
+
+    // A live writer commits the second half of a same-millisecond burst after
+    // our scan: same recency, composerId sorting BELOW the keyset position.
+    const db2 = new Database(path.join(tmpDir, "User", "globalStorage", "state.vscdb"));
+    insertComposerHeader(db2, { composerId: "aaa", recency: 1000, fsPath: "/proj" });
+    insertComposerData(db2, { composerId: "aaa", createdAt: 901, headers: [{ bubbleId: "b1", type: 1 }] });
+    insertBubble(db2, { composerId: "aaa", bubbleId: "b1", type: 1, text: "late tie", createdAt: 951 });
+    db2.close();
+
+    const second = adapter.parseSince(dbPath, first.cursor);
+    expect(second.sessions.map((s) => s.id)).toEqual(["aaa"]);
+
+    const third = adapter.parseSince(dbPath, second.cursor);
+    expect(third.sessions).toHaveLength(0); // and it is not re-indexed forever after
   });
 });
 

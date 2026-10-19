@@ -102,6 +102,7 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
     messagesIndexed: a.messagesIndexed + b.messagesIndexed + c.messagesIndexed + d.messagesIndexed,
     parseErrors: a.parseErrors + b.parseErrors + c.parseErrors + d.parseErrors,
     skippedFiles: [...a.skippedFiles, ...b.skippedFiles, ...c.skippedFiles, ...d.skippedFiles],
+    droppedPermanently: [...a.droppedPermanently, ...b.droppedPermanently, ...c.droppedPermanently, ...d.droppedPermanently],
     backlogRemaining: a.backlogRemaining + b.backlogRemaining + c.backlogRemaining + d.backlogRemaining,
     elapsedMs: a.elapsedMs + b.elapsedMs + c.elapsedMs + d.elapsedMs,
   };
@@ -117,6 +118,8 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
   // pathological transcript reads as "this file was skipped", never as
   // "indexing is broken".
   for (const skipped of stats.skippedFiles) log(`skipped (will retry next run): ${skipped}`);
+  // A permanent drop must never masquerade as a transient one.
+  for (const dropped of stats.droppedPermanently) log(`skipped permanently (corrupt at source): ${dropped}`);
   // A capped backfill (Cursor bounds work per call) must never read as "done":
   // silently holding back most of history is the looks-broken failure mode.
   if (stats.backlogRemaining > 0) {

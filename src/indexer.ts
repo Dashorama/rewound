@@ -22,6 +22,10 @@ export interface IndexStats {
   // parseErrors (malformed lines inside an otherwise-indexable file): a skip
   // means the file contributed nothing this run and will be retried next run.
   skippedFiles: string[];
+  // Per-session drops an adapter already advanced past (corrupt rows it will
+  // never re-read). Unlike skippedFiles these are NOT retried — labeling them
+  // "will retry" would promise self-healing that never comes.
+  droppedPermanently: string[];
   // Sessions a watermark source still holds beyond this run's per-call work
   // cap (0 for byte-offset sources): > 0 means "run index again to continue".
   backlogRemaining: number;
@@ -154,6 +158,7 @@ export function indexAll(db: Database.Database, adapter: SourceAdapter, roots: s
     messagesIndexed,
     parseErrors,
     skippedFiles,
+    droppedPermanently: [],
     backlogRemaining: 0,
     elapsedMs: Date.now() - start,
   };
@@ -180,6 +185,7 @@ export function indexAllWatermark(
   let parseErrors = 0;
   let backlogRemaining = 0;
   const skippedFiles: string[] = [];
+  const droppedPermanently: string[] = [];
 
   for (const sourcePath of discovered) {
     const existing = getSourceCursor(db, sourcePath);
@@ -199,7 +205,7 @@ export function indexAllWatermark(
     }
     const { sessions, cursor } = result;
     backlogRemaining += result.backlogRemaining ?? 0;
-    skippedFiles.push(...(result.skipped ?? []));
+    droppedPermanently.push(...(result.skipped ?? []));
 
     for (const session of sessions) {
       upsertSessionMessages(db, session, { mode: "upsert" });
@@ -226,6 +232,7 @@ export function indexAllWatermark(
     messagesIndexed,
     parseErrors,
     skippedFiles,
+    droppedPermanently,
     backlogRemaining,
     elapsedMs: Date.now() - start,
   };

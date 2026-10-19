@@ -479,7 +479,7 @@ export class CursorAdapter implements WatermarkSourceAdapter {
       // fetched row new by construction. composerIds are ASCII UUIDs, so JS
       // and SQLite BINARY ordering agree.
       const lastTieId = hdrTies.size > 0 ? [...hdrTies].sort().at(-1)! : "";
-      const headerRows = hasHeaders
+      let headerRows = hasHeaders
         ? (db
             .prepare(
               `SELECT composerId, recency, createdAt, value FROM composerHeaders
@@ -488,6 +488,26 @@ export class CursorAdapter implements WatermarkSourceAdapter {
             )
             .all(watermark, watermark, lastTieId, MAX_COMPOSERS_PER_CALL) as ComposerHeaderRow[])
         : [];
+      // Gap check: a live writer can commit a row AT the watermark recency
+      // with a composerId at or below the keyset position after our previous
+      // scan read past it (two commits of one same-millisecond burst, read in
+      // between). The keyset alone would never fetch it again; the persisted
+      // tie set makes it detectable — any unseen row at the boundary joins
+      // this batch. (A late commit whose recency lands BELOW an already-
+      // advanced watermark needs out-of-timestamp-order commits under writer
+      // contention and is not covered — the old >= scheme didn't cover it
+      // either.)
+      if (hasHeaders && hdrTies.size > 0) {
+        const gapRows = (
+          db
+            .prepare(
+              `SELECT composerId, recency, createdAt, value FROM composerHeaders
+               WHERE recency = ? AND composerId <= ?`
+            )
+            .all(watermark, lastTieId) as ComposerHeaderRow[]
+        ).filter((r) => !hdrTies.has(r.composerId));
+        if (gapRows.length > 0) headerRows = [...gapRows, ...headerRows];
+      }
 
       let nextWatermark = watermark;
       for (const r of headerRows) if (r.recency > nextWatermark) nextWatermark = r.recency;
@@ -693,7 +713,7 @@ export class CursorAdapter implements WatermarkSourceAdapter {
               // fall through to the inline copy
             }
           }
-          const msg = parseBubbleValue(d!, bubbleId, carryTs ?? composer.createdAt);
+          const msg = parseBubbleValue(d!, bubbleId, carryTs ?? composer.createdAt ?? headerTs);
           if (typeof d!.createdAt === "number") carryTs = d!.createdAt;
           if (!msg) {
             parseErrors++; // an unrecognized type — same real error the headered path counts

@@ -235,7 +235,11 @@ describe("indexAllWatermark", () => {
     const db = openDb(dbPath);
     const stats = indexAllWatermark(db, stub, ["/fake"]);
     expect(stats.backlogRemaining).toBe(7);
-    expect(stats.skippedFiles).toContain("cursor composer abc: malformed composerData JSON");
+    // Adapter-level skips are permanent drops (the adapter advances past
+    // them by design) — they must not share the "will retry next run"
+    // channel used for whole-source failures.
+    expect(stats.droppedPermanently).toContain("cursor composer abc: malformed composerData JSON");
+    expect(stats.skippedFiles).not.toContain("cursor composer abc: malformed composerData JSON");
     db.close();
   });
 });

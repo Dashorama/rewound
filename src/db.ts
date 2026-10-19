@@ -72,13 +72,20 @@ export const TOOL_BM25_WEIGHT = 1.0;
 // is required for every DB that predates v4. No data backfill: the linkage
 // can only be freshly derived from source files on their next parse, not
 // reconstructed from what's already indexed.
-function migrateToV4(db: Database.Database): void {
+export function migrateToV4(db: Database.Database): void {
   const migrate = db.transaction(() => {
-    db.exec(`
-      ALTER TABLE sessions ADD COLUMN parent_session_id TEXT;
-      ALTER TABLE sessions ADD COLUMN agent_type TEXT;
-      ALTER TABLE sessions ADD COLUMN agent_description TEXT;
-    `);
+    // Idempotent on purpose: a crash in an older build could commit these
+    // ALTERs without the version stamp, and a blind re-run would then throw
+    // "duplicate column name" on every open — an unrecoverable CLI.
+    const existing = new Set(
+      (db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name)
+    );
+    for (const col of ["parent_session_id", "agent_type", "agent_description"]) {
+      if (!existing.has(col)) db.exec(`ALTER TABLE sessions ADD COLUMN ${col} TEXT;`);
+    }
+    // Stamp inside the same transaction (see migrateToV2): the columns and
+    // the version they imply commit atomically.
+    db.pragma("user_version = 4");
   });
   migrate();
 }
