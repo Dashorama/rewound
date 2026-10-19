@@ -770,6 +770,99 @@ describe("CursorAdapter.parseSince — skip-then-advance", () => {
   });
 });
 
+describe("CursorAdapter.parseSince — bubble timestamp fallback", () => {
+  function indexOne(headers: Array<{ bubbleId: string; type: 1 | 2 }>, opts: {
+    composerCreatedAt?: number;
+    recency: number;
+    bubbles: Array<{ bubbleId: string; type: 1 | 2; text?: string; createdAt?: number }>;
+  }) {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerHeader(db, { composerId: "c1", recency: opts.recency, fsPath: "/proj" });
+    insertComposerData(db, { composerId: "c1", createdAt: opts.composerCreatedAt, headers });
+    for (const b of opts.bubbles) insertBubble(db, { composerId: "c1", ...b });
+    db.close();
+    const res = new CursorAdapter().parseSince(dbPath);
+    expect(res.sessions).toHaveLength(1);
+    return res.sessions[0];
+  }
+
+  it("a bubble missing createdAt carries the previous bubble's timestamp, preserving order", () => {
+    const session = indexOne(
+      [{ bubbleId: "b1", type: 1 }, { bubbleId: "b2", type: 2 }, { bubbleId: "b3", type: 1 }],
+      {
+        composerCreatedAt: 100,
+        recency: 10_000,
+        bubbles: [
+          { bubbleId: "b1", type: 1, text: "first", createdAt: 5000 },
+          { bubbleId: "b2", type: 2, text: "middle (no ts)" },
+          { bubbleId: "b3", type: 1, text: "last", createdAt: 9000 },
+        ],
+      }
+    );
+    expect(session.messages.map((m) => m.uuid)).toEqual(["b1", "b2", "b3"]);
+    expect(session.messages[1].ts).toBe(new Date(5000).toISOString());
+  });
+
+  it("a leading bubble with no timestamp falls back to the composer's createdAt", () => {
+    const session = indexOne([{ bubbleId: "b1", type: 1 }], {
+      composerCreatedAt: 4321,
+      recency: 10_000,
+      bubbles: [{ bubbleId: "b1", type: 1, text: "untimed opener" }],
+    });
+    expect(session.messages[0].ts).toBe(new Date(4321).toISOString());
+  });
+
+  it("carries forward from a bubble that keep() drops", () => {
+    const session = indexOne(
+      [{ bubbleId: "b1", type: 1 }, { bubbleId: "b2", type: 2 }],
+      {
+        composerCreatedAt: 100,
+        recency: 10_000,
+        bubbles: [
+          { bubbleId: "b1", type: 1, text: "\n\n\n", createdAt: 5000 }, // formatting-gap turn, dropped
+          { bubbleId: "b2", type: 2, text: "real reply (no ts)" },
+        ],
+      }
+    );
+    expect(session.messages).toHaveLength(1);
+    expect(session.messages[0].ts).toBe(new Date(5000).toISOString());
+  });
+
+  it("falls back to the header row's own timestamp before resorting to epoch 0", () => {
+    const session = indexOne([{ bubbleId: "b1", type: 1 }], {
+      recency: 7777, // fixture stamps header createdAt = recency
+      bubbles: [{ bubbleId: "b1", type: 1, text: "nothing timed anywhere" }],
+    });
+    expect(session.messages[0].ts).toBe(new Date(7777).toISOString());
+  });
+
+  it("legacy composer with no timestamps anywhere still parses (documented epoch-0 last resort)", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(
+      "composerData:leg",
+      JSON.stringify({ composerId: "leg", conversation: [{ type: 1, text: "ancient" }] })
+    );
+    db.close();
+    makeWorkspaceStorage(tmpDir, { hash: "h1", folder: "/p", composerIds: ["leg"] });
+    const res = new CursorAdapter().parseSince(dbPath);
+    expect(res.sessions).toHaveLength(1);
+    expect(res.sessions[0].messages[0].ts).toBe(new Date(0).toISOString());
+  });
+
+  it("a literal null bubble row is a parse error, not a crash", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerHeader(db, { composerId: "c1", recency: 100, fsPath: "/proj" });
+    insertComposerData(db, { composerId: "c1", createdAt: 90, headers: [{ bubbleId: "bnull", type: 1 }, { bubbleId: "bok", type: 1 }] });
+    db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run("bubbleId:c1:bnull", "null");
+    insertBubble(db, { composerId: "c1", bubbleId: "bok", type: 1, text: "survives", createdAt: 95 });
+    db.close();
+    const res = new CursorAdapter().parseSince(dbPath);
+    expect(res.sessions).toHaveLength(1);
+    expect(res.sessions[0].parseErrors).toBe(1);
+    expect(res.sessions[0].messages.map((m) => m.uuid)).toEqual(["bok"]);
+  });
+});
+
 describe("CursorAdapter.parseSince — backlog visibility", () => {
   it("reports how many composers remain beyond the per-call cap, down to 0 when drained", () => {
     const { dbPath, db } = makeGlobalDb(tmpDir);

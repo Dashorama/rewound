@@ -51,6 +51,7 @@ import type { NormalizedMessage, NormalizedSession, WatermarkCursorValue, Waterm
 interface ComposerHeaderRow {
   composerId: string;
   recency: number;
+  createdAt: number | null;
   value: string;
 }
 
@@ -265,28 +266,17 @@ function extractCodeBlocksText(codeBlocks: BubbleValue["codeBlocks"]): string | 
 
 // 32% of bubbles on the reference install have no createdAt of their own
 // (confirmed by sampling — not rare). Falling back to 0 (1970-01-01) would
-// be actively misleading, so this falls back to the composer's own
-// createdAt instead — still approximate, but in the right era. Array.sort
-// is stable, so messages sharing a fallback timestamp keep the order they
-// were pushed in below, which already follows fullConversationHeadersOnly
-// (true conversation order) — a missing timestamp doesn't scramble order.
-function parseBubble(raw: string, bubbleId: string, composerCreatedAt: number | undefined): NormalizedMessage | undefined {
-  let d: BubbleValue;
-  try {
-    d = JSON.parse(raw);
-  } catch {
-    return undefined;
-  }
-  return parseBubbleValue(d, bubbleId, composerCreatedAt);
-}
-
-// Split out from parseBubble so the legacy `conversation` path can reuse
-// every extraction rule without a pointless re-serialize: those bubbles are
-// already objects inline in composerData, not JSON strings in their own KV row.
+// be actively misleading, and falling back to the *composer's* createdAt
+// sorts the bubble before the conversation's opening message once mixed
+// with real timestamps. Since fullConversationHeadersOnly is already true
+// conversation order, the caller carries the previous bubble's timestamp
+// forward and passes it here as fallbackTs (previous bubble's ts, else the
+// composer's createdAt, else the header row's own timestamp) — Array.sort
+// is stable, so equal timestamps keep push order and nothing scrambles.
 function parseBubbleValue(
   d: BubbleValue,
   bubbleId: string,
-  composerCreatedAt: number | undefined
+  fallbackTs: number | undefined
 ): NormalizedMessage | undefined {
   const role = d.type === 1 ? "user" : d.type === 2 ? "assistant" : undefined;
   if (!role) return undefined;
@@ -314,7 +304,7 @@ function parseBubbleValue(
   return {
     uuid: bubbleId,
     role,
-    ts: new Date(d.createdAt ?? composerCreatedAt ?? 0).toISOString(),
+    ts: new Date(d.createdAt ?? fallbackTs ?? 0).toISOString(),
     text: d.text ?? "",
     toolText,
     tools,
@@ -485,7 +475,7 @@ export class CursorAdapter implements WatermarkSourceAdapter {
       const headerRows = hasHeaders
         ? (db
             .prepare(
-              `SELECT composerId, recency, value FROM composerHeaders
+              `SELECT composerId, recency, createdAt, value FROM composerHeaders
                WHERE recency > ? OR (recency = ? AND composerId > ?)
                ORDER BY recency ASC, composerId ASC LIMIT ?`
             )
@@ -542,13 +532,20 @@ export class CursorAdapter implements WatermarkSourceAdapter {
       const backlogRemaining = headeredRemaining + legacyRemaining;
 
       const headerValueById = new Map(headerRows.map((r) => [r.composerId, r.value]));
+      // Last-resort per-composer timestamp when neither any bubble nor the
+      // composer itself carries one: the header row's own createdAt (recency
+      // when that is null) — approximate, but in the right era, unlike 1970.
+      const headerTsById = new Map(headerRows.map((r) => [r.composerId, r.createdAt ?? r.recency]));
       // Retried headered composers are behind the watermark, so their header
       // rows weren't in this batch — fetch each directly for its project dir.
       if (prevRetry.size > 0) {
-        const getHeader = db.prepare("SELECT value FROM composerHeaders WHERE composerId = ?");
+        const getHeader = db.prepare("SELECT recency, createdAt, value FROM composerHeaders WHERE composerId = ?");
         for (const id of prevRetry) {
-          const row = getHeader.get(id) as { value: string } | undefined;
-          if (row) headerValueById.set(id, row.value);
+          const row = getHeader.get(id) as { recency: number; createdAt: number | null; value: string } | undefined;
+          if (row) {
+            headerValueById.set(id, row.value);
+            headerTsById.set(id, row.createdAt ?? row.recency);
+          }
         }
       }
 
@@ -632,12 +629,32 @@ export class CursorAdapter implements WatermarkSourceAdapter {
         const keep = (msg: NormalizedMessage | undefined): boolean =>
           Boolean(msg && (msg.text.trim() || msg.tools.length > 0 || msg.toolText));
 
+        // Carried across the bubble loops: the last real createdAt seen, so a
+        // bubble without one lands next to its true neighbor instead of at
+        // the composer's creation time (which sorts before the opener).
+        let carryTs: number | undefined;
+        const headerTs = headerTsById.get(composerId);
+
         for (const h of headers) {
           const bubbleRow = getBubble.get(`bubbleId:${composerId}:${h.bubbleId}`) as { value: string } | undefined;
           if (!bubbleRow) continue; // pruned/expired bubble — not an error
-          const msg = parseBubble(bubbleRow.value, h.bubbleId, composer.createdAt);
+          let d: BubbleValue | null;
+          try {
+            d = JSON.parse(bubbleRow.value);
+          } catch {
+            parseErrors++; // malformed JSON — a real error
+            continue;
+          }
+          // A bubble row can be literally `null` (valid JSON — found in real
+          // stores); anything non-object can't be a bubble.
+          if (!d || typeof d !== "object" || Array.isArray(d)) {
+            parseErrors++;
+            continue;
+          }
+          const msg = parseBubbleValue(d, h.bubbleId, carryTs ?? composer.createdAt ?? headerTs);
+          if (typeof d.createdAt === "number") carryTs = d.createdAt; // even when the bubble itself is dropped below
           if (!msg) {
-            parseErrors++; // malformed JSON or an unrecognized type — a real error
+            parseErrors++; // an unrecognized type — a real error
             continue;
           }
           if (!keep(msg)) continue;
@@ -645,16 +662,25 @@ export class CursorAdapter implements WatermarkSourceAdapter {
         }
 
         for (const [i, entry] of legacyConversation.entries()) {
-          if (!entry) continue;
+          if (!entry || typeof entry !== "object") continue;
           // Inline bubbles carry their own bubbleId; fall back to a
           // positional id so a malformed entry can't collide with a sibling.
           const bubbleId = entry.bubbleId ?? `${composerId}-legacy-${i}`;
           // Prefer a KV row when one does exist (22 of 2,840) — it's the
-          // same bubble, but kept in sync with any later edit.
+          // same bubble, but kept in sync with any later edit. If that row is
+          // unreadable, the inline copy is still the same bubble — use it.
           const bubbleRow = getBubble.get(`bubbleId:${composerId}:${bubbleId}`) as { value: string } | undefined;
-          const msg = bubbleRow
-            ? parseBubble(bubbleRow.value, bubbleId, composer.createdAt)
-            : parseBubbleValue(entry, bubbleId, composer.createdAt);
+          let d: BubbleValue | null = entry;
+          if (bubbleRow) {
+            try {
+              const fromRow = JSON.parse(bubbleRow.value);
+              if (fromRow && typeof fromRow === "object" && !Array.isArray(fromRow)) d = fromRow;
+            } catch {
+              // fall through to the inline copy
+            }
+          }
+          const msg = parseBubbleValue(d!, bubbleId, carryTs ?? composer.createdAt);
+          if (typeof d!.createdAt === "number") carryTs = d!.createdAt;
           if (!keep(msg)) continue;
           messages.push(msg!);
         }
