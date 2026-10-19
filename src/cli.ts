@@ -102,6 +102,7 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
     messagesIndexed: a.messagesIndexed + b.messagesIndexed + c.messagesIndexed + d.messagesIndexed,
     parseErrors: a.parseErrors + b.parseErrors + c.parseErrors + d.parseErrors,
     skippedFiles: [...a.skippedFiles, ...b.skippedFiles, ...c.skippedFiles, ...d.skippedFiles],
+    backlogRemaining: a.backlogRemaining + b.backlogRemaining + c.backlogRemaining + d.backlogRemaining,
     elapsedMs: a.elapsedMs + b.elapsedMs + c.elapsedMs + d.elapsedMs,
   };
 
@@ -116,6 +117,11 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
   // pathological transcript reads as "this file was skipped", never as
   // "indexing is broken".
   for (const skipped of stats.skippedFiles) log(`skipped (will retry next run): ${skipped}`);
+  // A capped backfill (Cursor bounds work per call) must never read as "done":
+  // silently holding back most of history is the looks-broken failure mode.
+  if (stats.backlogRemaining > 0) {
+    log(`backlog: ${stats.backlogRemaining} conversations still queued — run \`rewound index\` again to continue the backfill`);
+  }
   if (stats.filesScanned === 0) {
     log("");
     log("no transcript files found. roots scanned:");

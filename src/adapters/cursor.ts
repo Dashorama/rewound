@@ -434,7 +434,7 @@ export class CursorAdapter implements WatermarkSourceAdapter {
   parseSince(
     dbPath: string,
     cursor?: WatermarkCursorValue
-  ): { sessions: NormalizedSession[]; cursor: WatermarkCursorValue; skipped?: string[] } {
+  ): { sessions: NormalizedSession[]; cursor: WatermarkCursorValue; backlogRemaining?: number; skipped?: string[] } {
     const persistedWatermark = cursor?.value ?? 0;
     // Two independent id namespaces packed into one tieBreakIds array: "hdr:"
     // entries are composerHeaders rows tied at the current watermark
@@ -514,14 +514,32 @@ export class CursorAdapter implements WatermarkSourceAdapter {
         .prepare("SELECT key FROM cursorDiskKV WHERE key LIKE 'composerData:%' ORDER BY key ASC")
         .all() as { key: string }[];
       const newLegacyIds: string[] = [];
+      let legacyRemaining = 0;
       for (const { key } of allComposerKeys) {
-        if (newLegacyIds.length >= legacyBudget) break;
         const id = key.slice("composerData:".length);
         if (headeredIds.has(id)) continue; // covered by the headered path above
         if (prevLegacySeen.has(id)) continue; // already indexed once, treated as static
         if (prevLegacyRetry.has(id)) continue; // re-attempted via the retry path below
-        newLegacyIds.push(id);
+        if (newLegacyIds.length < legacyBudget) newLegacyIds.push(id);
+        else legacyRemaining++; // over budget this call — counted so the backlog is visible
       }
+
+      // Headered rows beyond this call's cap: counted with the same keyset
+      // predicate the next call will fetch with. Only worth a COUNT when the
+      // batch actually filled up — a partial batch proves nothing remains.
+      let headeredRemaining = 0;
+      if (headerRows.length === MAX_COMPOSERS_PER_CALL) {
+        const last = headerRows[headerRows.length - 1];
+        headeredRemaining = (
+          db
+            .prepare(
+              `SELECT COUNT(*) AS c FROM composerHeaders
+               WHERE recency > ? OR (recency = ? AND composerId > ?)`
+            )
+            .get(last.recency, last.recency, last.composerId) as { c: number }
+        ).c;
+      }
+      const backlogRemaining = headeredRemaining + legacyRemaining;
 
       const headerValueById = new Map(headerRows.map((r) => [r.composerId, r.value]));
       // Retried headered composers are behind the watermark, so their header
@@ -670,7 +688,9 @@ export class CursorAdapter implements WatermarkSourceAdapter {
         ],
       };
 
-      return skipped.length > 0 ? { sessions, cursor: nextCursor, skipped } : { sessions, cursor: nextCursor };
+      return skipped.length > 0
+        ? { sessions, cursor: nextCursor, backlogRemaining, skipped }
+        : { sessions, cursor: nextCursor, backlogRemaining };
     } finally {
       db.close();
     }

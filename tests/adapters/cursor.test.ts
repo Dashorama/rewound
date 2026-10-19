@@ -770,6 +770,53 @@ describe("CursorAdapter.parseSince — skip-then-advance", () => {
   });
 });
 
+describe("CursorAdapter.parseSince — backlog visibility", () => {
+  it("reports how many composers remain beyond the per-call cap, down to 0 when drained", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    for (let i = 0; i < 120; i++) {
+      const id = `c${String(i).padStart(3, "0")}`;
+      insertComposerHeader(db, { composerId: id, recency: i + 1, fsPath: "/proj" });
+      insertComposerData(db, { composerId: id, createdAt: i, headers: [{ bubbleId: "b1", type: 1 }] });
+      insertBubble(db, { composerId: id, bubbleId: "b1", type: 1, text: `m${i}`, createdAt: i });
+    }
+    db.close();
+
+    const adapter = new CursorAdapter();
+    const first = adapter.parseSince(dbPath);
+    expect(first.sessions).toHaveLength(50);
+    expect(first.backlogRemaining).toBe(70);
+    const second = adapter.parseSince(dbPath, first.cursor);
+    expect(second.backlogRemaining).toBe(20);
+    const third = adapter.parseSince(dbPath, second.cursor);
+    expect(third.sessions).toHaveLength(20);
+    expect(third.backlogRemaining).toBe(0);
+  });
+
+  it("counts waiting legacy composers even when the headered batch consumed the whole budget", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    for (let i = 0; i < 50; i++) {
+      const id = `h${String(i).padStart(3, "0")}`;
+      insertComposerHeader(db, { composerId: id, recency: i + 1, fsPath: "/proj" });
+      insertComposerData(db, { composerId: id, createdAt: i, headers: [{ bubbleId: "b1", type: 1 }] });
+      insertBubble(db, { composerId: id, bubbleId: "b1", type: 1, text: `m${i}`, createdAt: i });
+    }
+    const legacyIds: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const id = `leg${i}`;
+      legacyIds.push(id);
+      insertComposerData(db, { composerId: id, createdAt: i, headers: [{ bubbleId: "b1", type: 1 }] });
+      insertBubble(db, { composerId: id, bubbleId: "b1", type: 1, text: `legacy ${i}`, createdAt: i });
+    }
+    db.close();
+    makeWorkspaceStorage(tmpDir, { hash: "h1", folder: "/legacy-proj", composerIds: legacyIds });
+
+    const adapter = new CursorAdapter();
+    const first = adapter.parseSince(dbPath);
+    expect(first.sessions).toHaveLength(50); // budget fully consumed by headered rows
+    expect(first.backlogRemaining).toBe(10); // the waiting legacy composers are still counted
+  });
+});
+
 describe("CursorAdapter.parseSince — incremental resume", () => {
   it("returns nothing when nothing changed since the cursor", () => {
     const { dbPath, db } = makeGlobalDb(tmpDir);

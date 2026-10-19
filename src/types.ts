@@ -87,5 +87,15 @@ export interface WatermarkSourceAdapter {
   parseSince(
     sourcePath: string,
     cursor?: WatermarkCursorValue
-  ): { sessions: NormalizedSession[]; cursor: WatermarkCursorValue };
+  ): {
+    sessions: NormalizedSession[];
+    cursor: WatermarkCursorValue;
+    // How many sessions the source still holds beyond this call's work cap —
+    // a capped first backfill must say "more to do", never report normal
+    // success while silently holding back most of the history.
+    backlogRemaining?: number;
+    // Per-session skips ("<what>: <why>") that indexed nothing and won't be
+    // retried; surfaced through IndexStats.skippedFiles.
+    skipped?: string[];
+  };
 }
