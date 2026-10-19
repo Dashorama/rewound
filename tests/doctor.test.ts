@@ -140,3 +140,42 @@ describe("analyzeCursorDrift", () => {
     expect(fieldsFound(analyzeCursorDrift(dbPath, { minTextLength: 5 }))).toEqual(["shortishField"]);
   });
 });
+
+describe("analyzeCursorDrift — hardening", () => {
+  it("reports a missing cursorDiskKV store instead of crashing (fresh install / non-Cursor db)", () => {
+    const bareDir = fs.mkdtempSync(path.join(os.tmpdir(), "rewound-doctor-bare-"));
+    const barePath = path.join(bareDir, "state.vscdb");
+    new Database(barePath).exec("CREATE TABLE ItemTable (key TEXT UNIQUE, value BLOB);");
+
+    let report!: ReturnType<typeof analyzeCursorDrift>;
+    expect(() => {
+      report = analyzeCursorDrift(barePath);
+    }).not.toThrow();
+    expect(report.storeMissing).toBe(true);
+    expect(report.scannedBubbles).toBe(0);
+    expect(report.findings).toEqual([]);
+    expect(formatDriftReport(report).join("\n")).toContain("fresh install");
+    fs.rmSync(bareDir, { recursive: true, force: true });
+  });
+
+  it("counts a status-only tool bubble as otherwise-empty (keep() drops it)", () => {
+    putBubble({ toolFormerData: { status: "completed" }, mysteryProse: PROSE });
+    const report = analyzeCursorDrift(dbPath);
+    const finding = report.findings.find((f) => f.field === "mysteryProse");
+    expect(finding?.inOtherwiseEmptyBubbles).toBe(1);
+  });
+
+  it("scans legacy inline conversation bubbles for unrecognised fields", () => {
+    const db = new Database(dbPath);
+    db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(
+      "composerData:leg",
+      JSON.stringify({
+        composerId: "leg",
+        conversation: [{ type: 1, text: "hi", legacyOnlyField: PROSE }],
+      })
+    );
+    db.close();
+    const report = analyzeCursorDrift(dbPath);
+    expect(fieldsFound(report)).toContain("legacyOnlyField");
+  });
+});

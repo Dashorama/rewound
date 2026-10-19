@@ -1,6 +1,5 @@
-import fs from "node:fs";
 import Database from "better-sqlite3";
-import { CURSOR_READ_BUBBLE_FIELDS, CURSOR_IGNORED_BUBBLE_FIELDS } from "./adapters/cursor.js";
+import { CURSOR_READ_BUBBLE_FIELDS, CURSOR_IGNORED_BUBBLE_FIELDS, abnormalToolStatus } from "./adapters/cursor.js";
 
 // Schema-drift detection.
 //
@@ -33,6 +32,8 @@ export interface DriftReport {
   dbPath: string;
   scannedBubbles: number;
   findings: DriftFinding[];
+  /** The db has no cursorDiskKV store at all — fresh install, or not a Cursor global-storage db. */
+  storeMissing?: boolean;
 }
 
 export interface DriftOptions {
@@ -87,8 +88,13 @@ function adapterFindsContent(d: Record<string, unknown>): boolean {
   if (status?.message) return true;
   const err = d.errorDetails as { message?: string } | undefined;
   if (err?.message) return true;
-  const tfd = d.toolFormerData as Record<string, unknown> | undefined;
-  if (tfd && (tfd.name || tfd.rawArgs || tfd.params || tfd.result || tfd.additionalData || tfd.status)) return true;
+  // Mirror keep()'s judgment: a bare normal status ("completed") indexes
+  // nothing — only a name, args/params/result text, or an ABNORMAL status
+  // makes the adapter keep the bubble.
+  const tfd = d.toolFormerData as
+    | { name?: string; rawArgs?: string; params?: string; result?: string; status?: string; additionalData?: { status?: string } }
+    | undefined;
+  if (tfd && (tfd.name || tfd.rawArgs || tfd.params || tfd.result || abnormalToolStatus(tfd))) return true;
   const blocks = d.codeBlocks as Array<{ content?: string }> | undefined;
   if (blocks?.some((b) => b?.content)) return true;
   return false;
@@ -100,6 +106,13 @@ export function analyzeCursorDrift(dbPath: string, opts: DriftOptions = {}): Dri
 
   const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 5000 });
   try {
+    const hasStore = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cursorDiskKV'").get();
+    if (!hasStore) {
+      // A fresh Cursor install (nothing persisted yet) or a plain VS Code
+      // User dir that ended up in the roots — not an error, just nothing to scan.
+      return { source: "cursor", dbPath, scannedBubbles: 0, findings: [], storeMissing: true };
+    }
+
     interface Acc {
       bubblesWithText: number;
       bubblesNonEmpty: number;
@@ -110,23 +123,7 @@ export function analyzeCursorDrift(dbPath: string, opts: DriftOptions = {}): Dri
     const acc = new Map<string, Acc>();
     let scanned = 0;
 
-    const rows = db.prepare("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'").iterate() as Iterable<{
-      key: string;
-      value: string;
-    }>;
-
-    for (const row of rows) {
-      if (maxBubbles && scanned >= maxBubbles) break;
-      let d: Record<string, unknown>;
-      try {
-        d = JSON.parse(row.value);
-      } catch {
-        continue;
-      }
-      // A bubble row can be literally `null` (valid JSON) — found in the real
-      // store, not hypothetical.
-      if (!d || typeof d !== "object" || Array.isArray(d)) continue;
-      if (d.type !== 1 && d.type !== 2) continue;
+    const scanBubble = (d: Record<string, unknown>, key: string): void => {
       scanned++;
       const otherwiseEmpty = !adapterFindsContent(d);
 
@@ -147,8 +144,54 @@ export function analyzeCursorDrift(dbPath: string, opts: DriftOptions = {}): Dri
         if (otherwiseEmpty) entry.inOtherwiseEmptyBubbles++;
         if (!entry.sampleText) {
           entry.sampleText = texts[0].slice(0, 200);
-          entry.sampleKey = row.key;
+          entry.sampleKey = key;
         }
+      }
+    };
+
+    const isBubbleShaped = (d: unknown): d is Record<string, unknown> =>
+      Boolean(d) && typeof d === "object" && !Array.isArray(d) && ((d as { type?: unknown }).type === 1 || (d as { type?: unknown }).type === 2);
+
+    const rows = db.prepare("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'").iterate() as Iterable<{
+      key: string;
+      value: string;
+    }>;
+
+    for (const row of rows) {
+      if (maxBubbles && scanned >= maxBubbles) break;
+      let d: Record<string, unknown>;
+      try {
+        d = JSON.parse(row.value);
+      } catch {
+        continue;
+      }
+      // A bubble row can be literally `null` (valid JSON) — found in the real
+      // store, not hypothetical.
+      if (!isBubbleShaped(d)) continue;
+      scanBubble(d, row.key);
+    }
+
+    // Legacy pre-`_v` composers keep their whole conversation inline in
+    // composerData, usually with NO bubbleId: rows at all — the adapter reads
+    // them, so drift detection has to look there too or those sessions could
+    // quietly thin out with no signal.
+    const composerRows = db
+      .prepare("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
+      .iterate() as Iterable<{ key: string; value: string }>;
+    for (const row of composerRows) {
+      if (maxBubbles && scanned >= maxBubbles) break;
+      let composer: { conversation?: unknown };
+      try {
+        composer = JSON.parse(row.value);
+      } catch {
+        continue;
+      }
+      if (!composer || typeof composer !== "object") continue;
+      const conversation = Array.isArray(composer.conversation) ? composer.conversation : [];
+      for (const entry of conversation) {
+        if (maxBubbles && scanned >= maxBubbles) break;
+        if (!isBubbleShaped(entry)) continue;
+        scanBubble(entry, row.key);
       }
     }
 
@@ -166,6 +209,10 @@ export function analyzeCursorDrift(dbPath: string, opts: DriftOptions = {}): Dri
 export function formatDriftReport(report: DriftReport): string[] {
   const lines: string[] = [];
   lines.push(`${report.source}: scanned ${report.scannedBubbles} bubbles in ${report.dbPath}`);
+  if (report.storeMissing) {
+    lines.push("no cursorDiskKV store in this db — fresh install, or not a Cursor global-storage db");
+    return lines;
+  }
   if (report.findings.length === 0) {
     lines.push("no unrecognised fields carrying text — adapter coverage looks complete");
     return lines;
@@ -183,12 +230,4 @@ export function formatDriftReport(report: DriftReport): string[] {
   lines.push("Each of these is either content worth indexing, or something to add to");
   lines.push("CURSOR_IGNORED_BUBBLE_FIELDS in src/adapters/cursor.ts with a reason.");
   return lines;
-}
-
-export function fileExists(p: string): boolean {
-  try {
-    return fs.statSync(p).isFile();
-  } catch {
-    return false;
-  }
 }

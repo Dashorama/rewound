@@ -239,7 +239,7 @@ function extractToolText(...jsons: (string | undefined)[]): string | undefined {
 // "error" (the tool itself failed).
 const NORMAL_TOOL_STATUSES = new Set(["completed", "success", "submitted"]);
 
-function abnormalToolStatus(toolFormerData: BubbleValue["toolFormerData"]): string | undefined {
+export function abnormalToolStatus(toolFormerData: BubbleValue["toolFormerData"]): string | undefined {
   const status = toolFormerData?.additionalData?.status ?? toolFormerData?.status;
   if (!status || NORMAL_TOOL_STATUSES.has(status)) return undefined;
   return status;
