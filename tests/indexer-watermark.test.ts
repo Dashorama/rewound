@@ -218,4 +218,28 @@ describe("indexAllWatermark", () => {
     expect(getSession(db, "ses-good")).toBeDefined();
     db.close();
   });
+
+  it("surfaces an adapter's backlog count and per-composer skips in the stats", () => {
+    const stub: WatermarkSourceAdapter = {
+      id: "cursor",
+      cursorKind: "watermark",
+      discover: () => ["/fake/state.vscdb"],
+      parseSince: () => ({
+        sessions: [],
+        cursor: { value: 0, tieBreakIds: [] },
+        backlogRemaining: 7,
+        skipped: ["cursor composer abc: malformed composerData JSON"],
+      }),
+    };
+
+    const db = openDb(dbPath);
+    const stats = indexAllWatermark(db, stub, ["/fake"]);
+    expect(stats.backlogRemaining).toBe(7);
+    // Adapter-level skips are permanent drops (the adapter advances past
+    // them by design) — they must not share the "will retry next run"
+    // channel used for whole-source failures.
+    expect(stats.droppedPermanently).toContain("cursor composer abc: malformed composerData JSON");
+    expect(stats.skippedFiles).not.toContain("cursor composer abc: malformed composerData JSON");
+    db.close();
+  });
 });

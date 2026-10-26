@@ -177,15 +177,27 @@ describe("search", () => {
 
 describe("resumeCommand", () => {
   it("returns the opencode --session incantation for opencode hits", () => {
-    expect(resumeCommand("opencode", "ses_abc123")).toBe("opencode --session ses_abc123");
+    expect(resumeCommand("opencode", "ses_abc123")).toEqual({ command: "opencode --session ses_abc123" });
   });
 
   it("still returns codex resume for codex hits", () => {
-    expect(resumeCommand("codex", "sess-1")).toBe("codex resume sess-1");
+    expect(resumeCommand("codex", "sess-1")).toEqual({ command: "codex resume sess-1" });
   });
 
   it("defaults to claude --resume for claude-code and unknown sources", () => {
-    expect(resumeCommand("claude-code", "sess-1")).toBe("claude --resume sess-1");
-    expect(resumeCommand(undefined, "sess-1")).toBe("claude --resume sess-1");
+    expect(resumeCommand("claude-code", "sess-1")).toEqual({ command: "claude --resume sess-1" });
+    expect(resumeCommand(undefined, "sess-1")).toEqual({ command: "claude --resume sess-1" });
+  });
+
+  it("cursor: the command is executable verbatim — quoted path, prose in the hint", () => {
+    const r = resumeCommand("cursor", "comp-1", "/a dir/with spaces");
+    expect(r.command).toBe('cursor "/a dir/with spaces"');
+    expect(r.hint).toBe("then reopen this chat from Cursor's own history");
+  });
+
+  it("cursor without a project dir: no command, hint carries the whole message", () => {
+    const r = resumeCommand("cursor", "comp-1");
+    expect(r.command).toBe("");
+    expect(r.hint).toBe("open this chat from Cursor's own history");
   });
 });

@@ -22,6 +22,13 @@ export interface IndexStats {
   // parseErrors (malformed lines inside an otherwise-indexable file): a skip
   // means the file contributed nothing this run and will be retried next run.
   skippedFiles: string[];
+  // Per-session drops an adapter already advanced past (corrupt rows it will
+  // never re-read). Unlike skippedFiles these are NOT retried — labeling them
+  // "will retry" would promise self-healing that never comes.
+  droppedPermanently: string[];
+  // Sessions a watermark source still holds beyond this run's per-call work
+  // cap (0 for byte-offset sources): > 0 means "run index again to continue".
+  backlogRemaining: number;
   elapsedMs: number;
 }
 
@@ -151,6 +158,8 @@ export function indexAll(db: Database.Database, adapter: SourceAdapter, roots: s
     messagesIndexed,
     parseErrors,
     skippedFiles,
+    droppedPermanently: [],
+    backlogRemaining: 0,
     elapsedMs: Date.now() - start,
   };
 }
@@ -174,7 +183,9 @@ export function indexAllWatermark(
   let sourcesUpdated = 0;
   let messagesIndexed = 0;
   let parseErrors = 0;
+  let backlogRemaining = 0;
   const skippedFiles: string[] = [];
+  const droppedPermanently: string[] = [];
 
   for (const sourcePath of discovered) {
     const existing = getSourceCursor(db, sourcePath);
@@ -185,7 +196,7 @@ export function indexAllWatermark(
     // runIndex already committed, and other sources in `discovered` still
     // deserve a chance. Report it as skipped and move on, leaving its cursor
     // untouched (we don't know what, if anything, it actually scanned).
-    let result: { sessions: NormalizedSession[]; cursor: WatermarkCursorValue };
+    let result: ReturnType<WatermarkSourceAdapter["parseSince"]>;
     try {
       result = adapter.parseSince(sourcePath, existingCursor);
     } catch (err) {
@@ -193,6 +204,8 @@ export function indexAllWatermark(
       continue;
     }
     const { sessions, cursor } = result;
+    backlogRemaining += result.backlogRemaining ?? 0;
+    droppedPermanently.push(...(result.skipped ?? []));
 
     for (const session of sessions) {
       upsertSessionMessages(db, session, { mode: "upsert" });
@@ -219,6 +232,8 @@ export function indexAllWatermark(
     messagesIndexed,
     parseErrors,
     skippedFiles,
+    droppedPermanently,
+    backlogRemaining,
     elapsedMs: Date.now() - start,
   };
 }

@@ -26,6 +26,13 @@ export interface NormalizedSession {
   gitBranch?: string;
   startedAt?: string;
   endedAt?: string;
+  // Set when this session IS a subagent transcript — the session that spawned
+  // it (Claude Code only, currently: derived from a sessionId mismatch inside
+  // the subagent's own transcript, see claude-code.ts). Absent = not a
+  // subagent, or the parent link isn't known for this source.
+  parentSessionId?: string;
+  agentType?: string; // e.g. "general-purpose" — from the subagent's sibling .meta.json, when present
+  agentDescription?: string; // the task description passed to the subagent, when present
   messages: NormalizedMessage[];
   // Session-level token usage for this parse chunk, for sources (Codex CLI)
   // that report usage in separate per-turn events rather than on messages.
@@ -80,5 +87,15 @@ export interface WatermarkSourceAdapter {
   parseSince(
     sourcePath: string,
     cursor?: WatermarkCursorValue
-  ): { sessions: NormalizedSession[]; cursor: WatermarkCursorValue };
+  ): {
+    sessions: NormalizedSession[];
+    cursor: WatermarkCursorValue;
+    // How many sessions the source still holds beyond this call's work cap —
+    // a capped first backfill must say "more to do", never report normal
+    // success while silently holding back most of the history.
+    backlogRemaining?: number;
+    // Per-session skips ("<what>: <why>") that indexed nothing and won't be
+    // retried; surfaced through IndexStats.skippedFiles.
+    skipped?: string[];
+  };
 }

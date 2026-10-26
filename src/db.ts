@@ -14,7 +14,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
   cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0,
   est_cost_usd REAL DEFAULT 0, parse_errors INTEGER DEFAULT 0,
-  archived INTEGER DEFAULT 0  -- 1 once source file is gone (archive mode)
+  archived INTEGER DEFAULT 0,  -- 1 once source file is gone (archive mode)
+  parent_session_id TEXT,      -- set when this session is a subagent transcript
+  agent_type TEXT, agent_description TEXT  -- subagent task metadata, when known
 );
 CREATE TABLE IF NOT EXISTS files (
   path TEXT PRIMARY KEY, session_id TEXT NOT NULL,
@@ -47,7 +49,7 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 `;
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 // bm25 column weights: a match in prose (typed user text, assistant text) is
 // worth 3x a match in tool output. Tool dumps stay searchable — error strings
@@ -62,12 +64,38 @@ export const TOOL_BM25_WEIGHT = 1.0;
 // there is no migrateToV3 — bumping CURRENT_SCHEMA_VERSION alone is enough for
 // openDb's existing "version < CURRENT_SCHEMA_VERSION" branch to stamp it.
 
+// v3 → v4: sessions gains parent_session_id/agent_type/agent_description, for
+// linking a Claude Code subagent transcript back to the session that spawned
+// it. Unlike sources (a new table, covered by CREATE TABLE IF NOT EXISTS),
+// these are new COLUMNS on an existing table — SCHEMA_SQL's CREATE TABLE IF
+// NOT EXISTS never touches a table that already exists, so an explicit ALTER
+// is required for every DB that predates v4. No data backfill: the linkage
+// can only be freshly derived from source files on their next parse, not
+// reconstructed from what's already indexed.
+export function migrateToV4(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    // Idempotent on purpose: a crash in an older build could commit these
+    // ALTERs without the version stamp, and a blind re-run would then throw
+    // "duplicate column name" on every open — an unrecoverable CLI.
+    const existing = new Set(
+      (db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name)
+    );
+    for (const col of ["parent_session_id", "agent_type", "agent_description"]) {
+      if (!existing.has(col)) db.exec(`ALTER TABLE sessions ADD COLUMN ${col} TEXT;`);
+    }
+    // Stamp inside the same transaction (see migrateToV2): the columns and
+    // the version they imply commit atomically.
+    db.pragma("user_version = 4");
+  });
+  migrate();
+}
+
 // v1 (0.1.0) → v2: messages gains tool_text; FTS becomes two weighted columns.
 // Migrates IN PLACE from the content table — never by reparsing source files,
 // because archived sessions' transcripts may already be deleted. Legacy rows
 // keep their combined text in the prose column (they rank no worse than
 // before); newly indexed messages get the proper split.
-function migrateToV2(db: Database.Database): void {
+export function migrateToV2(db: Database.Database): void {
   const migrate = db.transaction(() => {
     db.exec(`
       ALTER TABLE messages ADD COLUMN tool_text TEXT NOT NULL DEFAULT '';
@@ -78,7 +106,11 @@ function migrateToV2(db: Database.Database): void {
     `);
     db.exec(SCHEMA_SQL);
     db.exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild');`);
-    db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+    // Stamp only the version THIS migration produces. Stamping
+    // CURRENT_SCHEMA_VERSION here would strand a db that crashes before a
+    // later migration (e.g. v4's ALTERs) claiming a version it never reached;
+    // openDb stamps the final version after all migrations have run.
+    db.pragma("user_version = 2");
   });
   migrate();
 }
@@ -113,13 +145,20 @@ export function openDb(dbPath: string): Database.Database {
   const hasMessages = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
     .get();
+  const hasSessions = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+    .get();
   const version = db.pragma("user_version", { simple: true }) as number;
   if (hasMessages && version < 2) {
     migrateToV2(db); // legacy v1 DBs never stamped user_version, so they read 0
   } else {
     db.exec(SCHEMA_SQL);
-    if (version < CURRENT_SCHEMA_VERSION) db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
   }
+  // hasSessions/version captured above, before either branch ran: a table
+  // that already existed (any prior version) needs the ALTER; a table SCHEMA_SQL
+  // just created fresh above already has every current column, so skip it.
+  if (hasSessions && version < 4) migrateToV4(db);
+  if (version < CURRENT_SCHEMA_VERSION) db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
   return db;
 }
 
@@ -217,6 +256,9 @@ export interface SessionRow {
   estCostUsd: number;
   parseErrors: number;
   archived: boolean;
+  parentSessionId?: string;
+  agentType?: string;
+  agentDescription?: string;
 }
 
 function rowToSession(row: any): SessionRow {
@@ -238,6 +280,9 @@ function rowToSession(row: any): SessionRow {
     estCostUsd: row.est_cost_usd,
     parseErrors: row.parse_errors,
     archived: Boolean(row.archived),
+    parentSessionId: row.parent_session_id ?? undefined,
+    agentType: row.agent_type ?? undefined,
+    agentDescription: row.agent_description ?? undefined,
   };
 }
 
@@ -371,6 +416,9 @@ export function upsertSessionMessages(
 
     const title = session.title ?? existing?.title;
     const gitBranch = session.gitBranch ?? existing?.gitBranch;
+    const parentSessionId = session.parentSessionId ?? existing?.parentSessionId;
+    const agentType = session.agentType ?? existing?.agentType;
+    const agentDescription = session.agentDescription ?? existing?.agentDescription;
 
     // A message can REPLACE an already-indexed one under "upsert" (same uuid,
     // revised content) rather than only ever being net-new, so message_count/
@@ -415,11 +463,13 @@ export function upsertSessionMessages(
       `INSERT INTO sessions (
          id, source, project_dir, file_path, title, git_branch, started_at, ended_at,
          message_count, models, input_tokens, output_tokens, cache_read_tokens,
-         cache_write_tokens, est_cost_usd, parse_errors, archived
+         cache_write_tokens, est_cost_usd, parse_errors, archived,
+         parent_session_id, agent_type, agent_description
        ) VALUES (
          @id, @source, @projectDir, @filePath, @title, @gitBranch, @startedAt, @endedAt,
          @messageCount, @models, @inputTokens, @outputTokens, @cacheReadTokens,
-         @cacheWriteTokens, @estCostUsd, @parseErrors, 0
+         @cacheWriteTokens, @estCostUsd, @parseErrors, 0,
+         @parentSessionId, @agentType, @agentDescription
        )
        ON CONFLICT(id) DO UPDATE SET
          project_dir = excluded.project_dir,
@@ -436,7 +486,10 @@ export function upsertSessionMessages(
          cache_write_tokens = excluded.cache_write_tokens,
          est_cost_usd = excluded.est_cost_usd,
          parse_errors = excluded.parse_errors,
-         archived = 0`
+         archived = 0,
+         parent_session_id = excluded.parent_session_id,
+         agent_type = excluded.agent_type,
+         agent_description = excluded.agent_description`
     ).run({
       id: session.id,
       source: session.source,
@@ -448,6 +501,9 @@ export function upsertSessionMessages(
       endedAt: endedAt ?? null,
       messageCount,
       models: JSON.stringify(Array.from(models)),
+      parentSessionId: parentSessionId ?? null,
+      agentType: agentType ?? null,
+      agentDescription: agentDescription ?? null,
       inputTokens,
       outputTokens,
       cacheReadTokens,
@@ -626,6 +682,7 @@ export function getMessagesForSession(
     tools: string;
     model: string | null;
     is_sidechain: number;
+    tool_text: string;
   }>;
 }
 
